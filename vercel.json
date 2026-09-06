@@ -8,12 +8,20 @@
     {
       "src": "api/keepalive.py",
       "use": "@vercel/python"
+    },
+    {
+      "src": "api/process_pending.py",
+      "use": "@vercel/python"
     }
   ],
   "routes": [
     {
       "src": "^/api/keepalive/?$",
       "dest": "/api/keepalive.py"
+    },
+    {
+      "src": "^/api/process_pending/?$",
+      "dest": "/api/process_pending.py"
     },
     {
       "src": "^/(.*)$",

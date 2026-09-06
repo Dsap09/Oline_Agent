@@ -26,6 +26,7 @@ TTS_PREFIX = "tts_usage"
 PENDING_FILE_PREFIX = "pending_file"
 LOCATION_PREFIX = "location"
 PENDING_TASK_PREFIX = "pending_task"
+PROGRESS_MSG_PREFIX = "progres_msg_id"
 
 
 
@@ -489,6 +490,41 @@ async def log_error(error_message: str) -> bool:
     return result is not None
 
 
+# --- Progress Message ID Functions ---
+
+async def save_progress_message_id(chat_id: int, message_id: int) -> bool:
+    """
+    Menyimpan message_id pesan progres Telegram ke KV.
+    TTL 1 jam (3600 detik).
+    """
+    key = f"{PROGRESS_MSG_PREFIX}:{chat_id}"
+    result = await _kv_request(["SET", key, str(message_id), "EX", "3600"])
+    return result is not None
+
+
+async def get_progress_message_id(chat_id: int) -> Optional[int]:
+    """
+    Mengambil message_id pesan progres tersimpan dari KV.
+    """
+    key = f"{PROGRESS_MSG_PREFIX}:{chat_id}"
+    result = await _kv_request(["GET", key])
+    if result and result.get("result"):
+        try:
+            return int(result["result"])
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+async def clear_progress_message_id(chat_id: int) -> bool:
+    """
+    Menghapus message_id pesan progres dari KV setelah task selesai.
+    """
+    key = f"{PROGRESS_MSG_PREFIX}:{chat_id}"
+    result = await _kv_request(["DEL", key])
+    return result is not None
+
+
 # --- Pending Task Functions (Auto-Retry on Failure) ---
 
 async def save_pending_task(
@@ -497,9 +533,10 @@ async def save_pending_task(
     intent: Optional[str] = None,
     user_name: str = "Teman",
     error_reason: str = "",
+    message_id: Optional[int] = None,
 ) -> bool:
     """
-    Menyimpan perintah yang gagal dieksekusi ke KV untuk dicoba ulang nanti.
+    Menyimpan perintah yang gagal/pending dieksekusi ke KV untuk dicoba ulang nanti.
     Hanya menyimpan 1 pending task per user (overwrite yang lama).
     TTL 1 jam (3600 detik).
     """
@@ -511,6 +548,7 @@ async def save_pending_task(
         "intent": intent,
         "user_name": user_name,
         "error_reason": safe_error,
+        "message_id": message_id,
         "waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "retry_count": 0,
@@ -537,10 +575,42 @@ async def get_pending_task(chat_id: int) -> Optional[dict]:
             if isinstance(data, dict) and ("message" in data or "perintah" in data):
                 if "message" not in data and "perintah" in data:
                     data["message"] = data["perintah"]
+                if "perintah" not in data and "message" in data:
+                    data["perintah"] = data["message"]
                 return data
         except (json.JSONDecodeError, TypeError) as e:
             logger.warning("Error parsing pending task from KV: %s", str(e))
     return None
+
+
+async def get_all_pending_tasks() -> list[dict]:
+    """
+    Mengambil semua pending task yang tersimpan di KV (key: pending_task:*).
+    Returns list of dict pending tasks, tiap dict berisi chat_id.
+    """
+    pattern = f"{PENDING_TASK_PREFIX}:*"
+    res = await _kv_request(["KEYS", pattern])
+    if not res or not res.get("result"):
+        return []
+
+    keys = res["result"]
+    if not isinstance(keys, list):
+        return []
+
+    tasks = []
+    for key in keys:
+        if not isinstance(key, str) or not key.startswith(f"{PENDING_TASK_PREFIX}:"):
+            continue
+        try:
+            chat_id_str = key.split(":")[-1]
+            chat_id = int(chat_id_str)
+            task = await get_pending_task(chat_id)
+            if task:
+                task["chat_id"] = chat_id
+                tasks.append(task)
+        except (ValueError, TypeError):
+            continue
+    return tasks
 
 
 async def clear_pending_task(chat_id: int) -> bool:
@@ -570,3 +640,4 @@ async def update_pending_task_retry_count(chat_id: int, task: dict) -> bool:
     payload = json.dumps(task, ensure_ascii=False)
     result = await _kv_request(["SET", key, payload, "EX", "3600"])
     return result is not None
+

@@ -3,6 +3,7 @@ Telegram Bot setup dan handler untuk Oline.
 Mengelola penerimaan pesan dan routing ke Gemini pipeline.
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -152,6 +153,16 @@ POPULAR_STOCK_TICKERS = [
 ]
 
 HEAVY_KEYWORDS = {
+    "github": [
+        "github", "baca file github", "baca file repo", "edit dirimu", "tambahkan fitur",
+        "perbaiki bug", "self update", "update dirimu", "push ke github", "pull request",
+        "buat pr", "create pr", "baca github",
+    ],
+    "vercel_logs": [
+        "kenapa error", "kenapa gagal", "ada masalah apa", "ada masalah",
+        "error apa", "cek log", "bacakan log", "log vercel", "log terakhir",
+        "baca log", "lihat log", "log server",
+    ],
     "notion": [
         "notion", "catat ke notion", "simpan ke notion", "notes notion", "catatan notion",
         "tambah kolom", "buat kolom", "edit kolom", "tambah properti", "buat properti",
@@ -160,7 +171,7 @@ HEAVY_KEYWORDS = {
     ],
     "cuaca": ["cuaca", "hujan", "panas", "suhu", "cerah"],
     "rekomendasi": ["rekomendasi", "film", "lagu", "seri", "anime"],
-    "suara": ["suara", "nyanyi", "gombal", "puisi", "bacain", "baca"],
+    "suara": ["suara", "nyanyi", "gombal", "puisi", "voice note", "vn"],
     "jurnal": ["jurnal", "catat", "rekap jurnal"],
     "kuota": ["kuota", "token", "quota"],
     "drive": [
@@ -343,6 +354,21 @@ def is_rule_message(text: str) -> bool:
     return any(kw in text_lower for kw in RULE_KEYWORDS)
 
 
+def is_landing_page_generation_request(text: str, intent: str | None) -> bool:
+    """
+    Mendeteksi apakah pesan pengguna merupakan permintaan generasi/revisi/deploy landing page.
+    List & Delete deployment diselesaikan secara langsung (fast path).
+    """
+    if intent not in ("preview", "deploy", "design_reference"):
+        return False
+
+    text_lower = text.lower().strip()
+    if any(kw in text_lower for kw in ["list", "daftar", "hapus", "delete"]):
+        return False
+
+    return True
+
+
 async def handle_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -410,6 +436,32 @@ async def handle_message(
 
     # Deteksi intent untuk menentukan Fast Path / Slow Path (dengan dukungan konteks percakapan)
     intent = await detect_intent_async(user_message, chat_id)
+
+    # --- Async Landing Page Path (Anti Gantung & Notifikasi Progres Satu Pesan) ---
+    if is_landing_page_generation_request(user_message, intent):
+        from src.handlers import process_pending_task
+        from src.kv import save_pending_task, save_progress_message_id
+
+        # Kirim SATU pesan progres awal sesuai brief.md
+        progres_msg = await update.effective_chat.send_message(
+            "⏳ Permintaan diterima. Estimasi 30 detik."
+        )
+        msg_id = progres_msg.message_id if progres_msg else None
+
+        if msg_id:
+            await save_progress_message_id(chat_id, msg_id)
+
+        await save_pending_task(
+            chat_id=chat_id,
+            user_message=user_message,
+            intent=intent,
+            user_name=user_name,
+            message_id=msg_id,
+        )
+
+        # Jalankan pemrosesan background secara instan jika event loop berjalan
+        asyncio.create_task(process_pending_task(target_chat_id=chat_id))
+        return
 
     # Kirim "typing" action HANYA untuk Slow Path (fitur berat) untuk memangkas latensi Fast Path
     if intent is not None:

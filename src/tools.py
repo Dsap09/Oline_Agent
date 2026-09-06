@@ -27,7 +27,14 @@ from src.kv import (
 
 # NOTE: src.notion dan src.voice di-lazy-load di dalam fungsi masing-masing
 # untuk mengurangi cold start time pada Vercel serverless.
+from src.github_tools import (
+    create_github_branch,
+    create_pull_request,
+    read_github_file,
+    update_github_file,
+)
 from src.utils import format_date_indonesian, parse_relative_date
+from src.vercel_logs import read_vercel_logs
 
 logger = logging.getLogger(__name__)
 
@@ -625,6 +632,101 @@ TOOL_DECLARATIONS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "read_vercel_logs",
+        "description": "Membaca log Vercel terbaru. Gunakan mode 'error' untuk masalah, atau mode 'semua' untuk log lengkap.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["error", "semua"],
+                    "description": "Mode filter log. 'error' untuk error/warn saja, 'semua' untuk semua level.",
+                }
+            },
+            "required": ["mode"],
+        },
+    },
+    {
+        "name": "read_github_file",
+        "description": "Membaca isi file dari repository GitHub Oline.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path file, misal: src/personas.py, README.md.",
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "Nama branch (opsional, default: main).",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "create_github_branch",
+        "description": "Membuat branch baru di repository GitHub dari branch main.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "branch_name": {
+                    "type": "string",
+                    "description": "Nama branch baru, misal: oline-update/cek-kuota.",
+                },
+            },
+            "required": ["branch_name"],
+        },
+    },
+    {
+        "name": "update_github_file",
+        "description": "Menambah atau memperbarui file di branch tertentu di repository GitHub.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Nama branch tujuan.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Path file (misal: src/personas.py).",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Isi lengkap file baru.",
+                },
+                "commit_message": {
+                    "type": "string",
+                    "description": "Pesan commit.",
+                },
+            },
+            "required": ["branch", "path", "content", "commit_message"],
+        },
+    },
+    {
+        "name": "create_pull_request",
+        "description": "Membuat Pull Request dari branch fitur ke main.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Nama branch sumber.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Judul Pull Request.",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Deskripsi atau rincian perubahan Pull Request.",
+                },
+            },
+            "required": ["branch", "title", "body"],
+        },
+    },
 ]
 
 TOOLS_BY_INTENT = {
@@ -633,7 +735,7 @@ TOOLS_BY_INTENT = {
     "suara": ["send_voice_message"],
     "jurnal": ["save_journal_entry", "get_journal_recap"],
     "kuota": ["check_quota"],
-    "search": ["search_internet"],
+    "search": ["search_internet", "read_vercel_logs"],
     "saham": ["get_stock_price", "get_market_summary"],
     "drive": [
         "create_drive_folder",
@@ -643,7 +745,7 @@ TOOLS_BY_INTENT = {
         "download_from_drive",
     ],
     "lokasi": ["get_nearby_places", "search_places_by_city"],
-    "coding": ["execute_code"],
+    "coding": ["execute_code", "read_vercel_logs"],
     "notion": ["save_note_to_notion", "save_memory_to_notion", "add_notion_property"],
     "preview": ["preview_with_codepen", "search_design_reference"],
     "deploy": [
@@ -654,6 +756,13 @@ TOOLS_BY_INTENT = {
     "gambar": ["search_and_send_image"],
     "neo4j": ["simpan_aktivitas_neo4j", "cari_aktivitas_neo4j"],
     "design_reference": ["search_design_reference"],
+    "vercel_logs": ["read_vercel_logs"],
+    "github": [
+        "read_github_file",
+        "create_github_branch",
+        "update_github_file",
+        "create_pull_request",
+    ],
 }
 
 
@@ -2572,6 +2681,11 @@ TOOL_EXECUTORS = {
     "search_design_reference": search_design_reference,
     "analyze_image": analyze_image,
     "identify_image_subject": identify_image_subject,
+    "read_vercel_logs": read_vercel_logs,
+    "read_github_file": read_github_file,
+    "create_github_branch": create_github_branch,
+    "update_github_file": update_github_file,
+    "create_pull_request": create_pull_request,
 }
 
 TOOL_HANDLERS = TOOL_EXECUTORS
