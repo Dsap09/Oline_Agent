@@ -1,14 +1,17 @@
 # Oline – Personal AI Telegram Bot 🤖
 
-Oline adalah bot Telegram asisten pribadi berpersona Gen-Z yang cerdas, cepat, dan serba bisa. Dibangun menggunakan **Python 3.10+**, **Google Gemini AI**, **Groq API**, **Neo4j AuraDB**, **Moondream VLM**, **Notion API**, dan dideploy di **Vercel Serverless Functions**.
+Oline adalah bot Telegram asisten pribadi berpersona Gen-Z yang cerdas, cepat, dan serba bisa. Dibangun menggunakan **Python 3.10+**, **Google Gemini AI**, **Groq API**, **DeepInfra (DeepSeek V4 Flash)**, **PyGithub**, **Neo4j AuraDB**, **Moondream VLM**, **Notion API**, dan dideploy di **Vercel Serverless Functions**.
 
 ---
 
 ## ✨ Fitur Utama
 
 - **⚡ Fast Path (Groq API)** — Respon kilat untuk obrolan santai, sapaan, dan pertanyaan ringan menggunakan model `openai/gpt-oss-20b`.
-- **🛠️ Slow Path (Google Gemini API)** — Pemrosesan kecerdasan utama dengan rotasi model otomatis (`gemini-flash-lite-latest`, `gemini-2.5-flash`, `gemini-2.0-flash`) dan Function Calling untuk tugas kompleks.
+- **🛠️ Slow Path (Google Gemini API & OpenRouter Rotation)** — Pemrosesan kecerdasan utama dengan rotasi model otomatis (`gemini-3.6-flash`, `gemini-3.5-flash-lite`, OpenRouter Model Rotation) dan Function Calling untuk tugas kompleks.
 - **🛡️ Groq Slow Path Fallback** — Jika Gemini down (kuota habis/429/timeout), Oline otomatis fallback ke Groq dengan dukungan *Function Calling* (2-stage OpenAI tool execution) agar fitur bot tidak pernah mati.
+- **⏳ Alur Landing Page Async & Progress Satu Pesan Dinamis** — Pemrosesan pembuatan & revisi landing page secara *background async* (anti-hang/timeout di Vercel). Mengirimkan notifikasi status melalui **SATU pesan Telegram dinamis** yang diperbarui secara bertahap via `edit_message_text`, serta didukung endpoint background `/api/process_pending`.
+- **🔍 Fitur Baca Log Vercel Cerdas & Hemat** — Pembacaan runtime log Vercel (`read_vercel_logs`) dengan filter cerdas: mode `error` (log error & warn saja saat tanya error) dan mode `semua` (10 log terakhir) dilengkapi caching Vercel KV 120 detik agar hemat API.
+- **🤖 Self-Improving Agent via GitHub** — Oline mampu melakukan *self-update* kodenya sendiri secara mandiri di GitHub: membaca kode (`read_github_file`), membuat branch baru (`create_github_branch`), mengedit file (`update_github_file`), dan membuka Pull Request (`create_pull_request`) ke branch `main` untuk direview pengguna sebelum Vercel auto-deploy.
 - **🖼️ Analisis Gambar (Moondream VLM)** — Analisis dan deskripsi foto/gambar otomatis dari chat Telegram menggunakan **Moondream3** (`merve/moondream3`) dan **Moondream2** (`vikhyatk/moondream2`) dengan penerjemahan & penggubahan ulang (*auto-translation & rephrasing*) ke Bahasa Indonesia khas Gen-Z oleh Oline.
 - **🎨 Search & Inspeksi Referensi Desain Website** — Mencari website referensi di internet (DuckDuckGo) dan menginspeksi elemen desainnya (font, warna hex dominan, struktur layout, hero text `<h1>`) via `BeautifulSoup` & `lxml` sebagai inspirasi landing page.
 - **🚀 Landing Page Preview & Vercel Deploy** — Pembuatan landing page modern anti-AI-slop dengan preview otomatis di CodePen (`preview_with_codepen`) dan deployment langsung ke Vercel (`deploy_to_vercel`).
@@ -38,15 +41,16 @@ Oline adalah bot Telegram asisten pribadi berpersona Gen-Z yang cerdas, cepat, d
 | **Database / KV** | Vercel KV / Upstash Redis (REST API Pipeline) |
 | **Graph Database** | Neo4j AuraDB (`neo4j` official driver) |
 | **Vision Language Model** | Moondream3 (`merve/moondream3`) + Moondream2 (`vikhyatk/moondream2`) |
+| **Git / GitHub Engine** | `PyGithub` (GitHub REST API Client) |
 | **HTML Parsing & Inspection** | `beautifulsoup4` & `lxml` |
-| **AI Primary Engine** | Google Gemini API (`google-genai` SDK) |
+| **AI Primary Engine** | Google Gemini API (`google-genai` SDK) & OpenRouter API |
 | **AI Fast Engine & Fallback** | Groq API (`openai/gpt-oss-20b`) |
 | **AI Landing Page Generator** | DeepInfra API (`DeepSeek-V4-Flash-0731`) |
 | **Catatan / Productivity** | Notion API (`https://api.notion.com`) |
 | **Eksekusi Kode** | Piston API (`https://emkc.org/api/v2/piston/execute`) |
 | **TTS Voice Engine** | ElevenLabs API |
 | **Cloud Storage** | Google Drive API (OAuth 2.0) |
-| **Integrasi API** | TMDb, OpenWeatherMap, iTunes, yfinance, DuckDuckGo (`ddgs`) |
+| **Integrasi API** | TMDb, OpenWeatherMap, iTunes, yfinance, DuckDuckGo (`ddgs`), Vercel Logs API |
 | **Telegram Framework** | `python-telegram-bot` v20+ (Webhook Mode) |
 | **HTTP Client** | `httpx` (async) |
 
@@ -57,17 +61,24 @@ Oline adalah bot Telegram asisten pribadi berpersona Gen-Z yang cerdas, cepat, d
 ```
 .
 ├── api/
-│   └── index.py                    # Entrypoint serverless Vercel (webhook)
+│   ├── index.py                    # Entrypoint serverless Vercel (webhook Telegram)
+│   ├── keepalive.py                # Keep-alive warm-up endpoint
+│   └── process_pending.py          # Background processor endpoint untuk pending tasks
 ├── src/
-│   ├── bot.py                      # Telegram Bot handlers & intent routing
+│   ├── bot.py                      # Telegram Bot handlers, intent routing & instant acknowledgment
+│   ├── handlers.py                 # Background pending task processor & single message progress updates (edit_text)
+│   ├── vercel_logs.py              # Vercel Runtime Logs fetcher & AI analyzer dengan KV caching
+│   ├── github_tools.py             # PyGithub integration (read, branch, commit, PR creation)
 │   ├── gemini.py                   # Gemini AI client, model rotation & system prompt context
 │   ├── groq.py                     # Groq Fast Path & Slow Path fallback (Function Calling)
+│   ├── openrouter.py               # OpenRouter API client & model rotation
+│   ├── deepinfra.py                # DeepInfra API client (DeepSeek V4 Flash untuk landing page)
 │   ├── tools.py                    # Deklarasi tools, OpenAI format converter & executor registry
 │   ├── neo4j_client.py             # Neo4j AuraDB graph database client (simpan/cari aktivitas)
 │   ├── notion.py                   # Notion REST API helper (save notes, properties & database ID)
 │   ├── drive.py                    # Google Drive API integration helper
 │   ├── voice.py                    # ElevenLabs TTS & Telegram Voice Note helper
-│   ├── kv.py                       # Vercel KV / Upstash Redis REST helper (pipeline, rate limit)
+│   ├── kv.py                       # Vercel KV / Upstash Redis REST helper (pipeline, rate limit, message_id)
 │   ├── autocorrect_utils.py        # Normalisasi kata & pembersihan typo
 │   ├── personas.py                 # System prompt & kepribadian Gen-Z Oline
 │   └── utils.py                    # Helper tanggal, waktu WIB real-time & format Indonesia
@@ -113,11 +124,12 @@ Isi variabel utama:
 - `TELEGRAM_BOT_TOKEN`: Dari [@BotFather](https://t.me/BotFather)
 - `GEMINI_API_KEY`: Dari [Google AI Studio](https://aistudio.google.com/apikey)
 - `GROQ_API_KEY`: Dari [Groq Console](https://console.groq.com/keys)
+- `GITHUB_TOKEN`, `GITHUB_OWNER`, `GITHUB_REPO`: Token Fine-grained & repositori dari [GitHub Settings](https://github.com/settings/tokens) (Permissions: Contents & Pull Requests)
+- `VERCEL_API_TOKEN`: Dari [Vercel Tokens](https://vercel.com/account/tokens) untuk log runtime & deployment
 - `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`: Dari [Neo4j AuraDB Console](https://console.neo4j.io/)
 - `MOONDREAM_SPACE_1` & `MOONDREAM_SPACE_2`: Space Moondream utama (`merve/moondream3`) dan fallback (`vikhyatk/moondream2`)
 - `DEEPINFRA_API_KEY` & `DEEPINFRA_MODEL`: Dari [DeepInfra Console](https://deepinfra.com/)
 - `NOTION_API_KEY` & `NOTION_DATABASE_ID`: Dari [Notion Integrations](https://www.notion.so/my-integrations)
-- `VERCEL_API_TOKEN`: Dari [Vercel Tokens](https://vercel.com/account/tokens)
 - `TMDB_API_KEY`: Dari [TMDb API](https://www.themoviedb.org/settings/api)
 - `OPENWEATHER_API_KEY`: Dari [OpenWeatherMap](https://openweathermap.org/api)
 - `KV_REST_API_URL` & `KV_REST_API_TOKEN`: Dari [Vercel KV / Upstash Redis](https://vercel.com/storage/kv)
@@ -149,14 +161,6 @@ Cek status webhook:
 python scripts/set_webhook.py --info
 ```
 
-### 5. Jalankan Unit Test (Opsional)
-
-Untuk memverifikasi semua fungsi dan integrasi berjalan baik:
-
-```bash
-python -m unittest discover -s tests -p "test_*.py"
-```
-
 ---
 
 ## 💬 Contoh Penggunaan
@@ -165,27 +169,22 @@ python -m unittest discover -s tests -p "test_*.py"
 User: Hai Oline, apa kabar?
 Oline: Haii! Aku baik nih, kamu gimana? Ada yang bisa Oline bantu hari ini? 😊
 
-User: (Kirim foto bus kuning)
-Oline: Gambar ini menunjukkan sebuah bus sekolah berwarna kuning sedang melaju di jalan raya dengan suasana siang hari yang cerah~ 🚌☀️
+User: Buat landing page Sakura Brew
+Oline: (1 pesan progres yang terus di-edit secara dinamis)
+       ⏳ [1/4] Menyusun struktur HTML... Sisa 25 detik.
+       ...
+       ⏳ [3/4] Menambahkan efek Canvas & menyiapkan preview... Sisa 8 detik.
+       ...
+       ✅ Selesai! Link: https://codepen.io/pen/define/xxx
 
-User: Buat landing page gym, referensinya dari website gym terkenal
-Oline: 🎨 Oline udah cari dan analisis beberapa referensi website gym nih! Ini link preview landing page baru yang udah Oline siapin: https://codepen.io/pen/define/xxx
+User: Olin, kenapa tadi error?
+Oline: 🔍 (Membaca runtime log Vercel mode error)
+       Tadi terjadi kesalahan timeout pada API DuckDuckGo, namun Oline berhasil melakukan fallback otomatis sehingga respon tetap berhasil dikirimkan~
 
-User: Simpan aktivitas: Doni minta landing page gym
-Oline: 🔗 Aktivitas 'Doni minta landing page gym' berhasil disimpan ke Neo4j Graph!
-
-User: Tampilkan aktivitas terakhirku
-Oline: 🔗 [2026-09-04 20:30:00] deploy -> landing-page-gym
-       🔗 [2026-09-04 20:25:00] preview -> GYM MANIA
-       🔗 [2026-09-04 20:20:00] simpan catatan -> Ide Riset AI
-
-User: Catat ke Notion: "Ide riset AI agent" isinya "Membahas autonomous agent untuk skripsi."
-Oline: 📝 Siap! Catatan 'Ide riset AI agent' udah masuk Notion, kategori Umum~
-
-User: Cuaca besok di Bandung gimana?
-Oline: 🌤️ Kondisi di Bandung besok diprediksi sedikit berawan
-       🌡️ Suhu sekitar 25°C, adem dan nyaman banget
-       💡 Pas buat jalan-jalan sore, tapi tetep bawa payung ya!
+User: Olin, tambahkan fitur baru di dirimu
+Oline: 🤖 (Membaca file repo, membuat branch oline-update/fitur-baru, commit & push, serta membuka PR)
+       Pull Request berhasil dibuat: https://github.com/Dsap09/Oline_Personal/pull/1
+       Silakan review dan merge ya!
 
 User: Cek saham BBCA dong
 Oline: BBCA sekarang Rp 10,250 📈 (+150, +1.49%)
