@@ -520,6 +520,12 @@ async def chat_with_oline(
                 bot_response = "hmm, aku lagi agak bingung nih. coba lagi nanti ya 😅"
 
             # 9. Simpan pemakaian token ke KV
+            try:
+                from src.kv import increment_usage
+                await increment_usage("gemini", {"request": 1, "token": total_tokens_session})
+            except Exception as kv_err:
+                logger.warning("Failed to increment gemini usage: %s", str(kv_err))
+
             if total_tokens_session > 0:
                 await save_usage(chat_id, total_tokens_session)
 

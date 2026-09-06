@@ -1065,11 +1065,104 @@ async def execute_get_journal_recap(
     return {"entries": formatted, "total_entries": len(formatted)}
 
 
+def hitung_sisa(provider: str, terpakai: Any) -> str:
+    """
+    Menghitung sisa kuota/limit untuk provider AI tertentu (brief.md).
+    """
+    from src.config import PROVIDER_LIMITS
+
+    limit = PROVIDER_LIMITS.get(provider)
+    if not limit:
+        return "tidak tersedia"
+
+    limit_type = limit.get("type")
+    total_limit = limit.get("total", 0)
+
+    try:
+        if limit_type == "saldo":
+            val = float(terpakai) if terpakai else 0.0
+            sisa_saldo = max(0.0, float(total_limit) - val)
+            return f"${sisa_saldo:.2f}"
+        else:
+            val = int(terpakai) if terpakai else 0
+            sisa = max(0, int(total_limit) - val)
+            if limit_type == "token":
+                period = limit.get("period", "hari")
+                period_suffix = f"/{period}" if period != "hari" else ""
+                return f"{sisa:,} token{period_suffix}"
+            else:
+                return f"{sisa} request"
+    except (ValueError, TypeError):
+        return "tidak tersedia"
+
+
+def format_quota_report(usage_data: dict) -> str:
+    """
+    Menyusun laporan kuota AI hari ini dengan format Terpakai, Sisa, dan Status (brief.md).
+    """
+    from src.config import PROVIDER_LIMITS
+
+    lines = ["📊 Laporan Kuota AI Hari Ini\n"]
+
+    total_request = 0
+    total_token = 0
+
+    for provider, limit_info in PROVIDER_LIMITS.items():
+        label = limit_info.get("label", provider)
+        data = usage_data.get(provider, {})
+        req = data.get("request", 0) if isinstance(data, dict) else 0
+        token = data.get("token", 0) if isinstance(data, dict) else 0
+
+        limit_type = limit_info.get("type", "request")
+        if limit_type == "request":
+            terpakai_val = req
+            terpakai_str = f"{req} request"
+        elif limit_type == "token":
+            terpakai_val = token
+            terpakai_str = f"{token:,} token"
+        elif limit_type == "saldo":
+            terpakai_val = data.get("saldo_terpakai", 0.0) if isinstance(data, dict) else 0.0
+            terpakai_str = f"${terpakai_val:.2f}"
+        else:
+            terpakai_val = req
+            terpakai_str = f"{req} request"
+
+        sisa_str = hitung_sisa(provider, terpakai_val)
+        status = "✅ Aman" if "0 token" not in sisa_str and "0 request" not in sisa_str else "❌ Habis"
+
+        lines.append(f"{label}")
+        lines.append(f"   Terpakai: {terpakai_str}")
+        lines.append(f"   Sisa: {sisa_str}")
+        lines.append(f"   Status: {status}")
+        lines.append("")
+
+        total_request += req
+        total_token += token
+
+    lines.append("Ringkasan:")
+    lines.append(f"• Total request: {total_request}")
+    lines.append(f"• Total token: {total_token:,}")
+
+    return "\n".join(lines)
+
+
+async def check_ai_quota() -> str:
+    """
+    Menampilkan laporan pemakaian dan sisa semua model AI (brief.md).
+    """
+    from src.kv import get_all_ai_usage
+    usage_data = await get_all_ai_usage()
+    return format_quota_report(usage_data)
+
+
 async def execute_check_quota(chat_id: int) -> dict[str, Any]:
     """
     Mengecek pemakaian API (OpenRouter Model Rotation, Groq, & Gemini) hari ini.
     Menampilkan model aktif, daftar rotasi, pemakaian per model, dan sisa antrean sebelum fallback.
     """
+    from src.kv import get_all_ai_usage
+    usage_data = await get_all_ai_usage()
+    formatted_report = format_quota_report(usage_data)
     GEMINI_LIMIT = 1_000_000
     GROQ_LIMIT = 14_400_000
 
@@ -2656,6 +2749,7 @@ TOOL_EXECUTORS = {
     "save_journal_entry": execute_save_journal,
     "get_journal_recap": execute_get_journal_recap,
     "check_quota": execute_check_quota,
+    "check_ai_quota": check_ai_quota,
     "send_voice_message": execute_send_voice_message,
     "search_internet": search_internet,
     "get_stock_price": get_stock_price,

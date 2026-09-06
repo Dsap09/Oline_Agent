@@ -124,7 +124,7 @@ Ada opsi kegiatan yang sesuai dengan preferensi Anda?"
 - Untuk cuaca: gunakan emoji 🌤️, 🌡️, 💧, 💡 di baris terpisah dengan penjelasan ringkas.
 - Untuk rekomendasi film/lagu: gunakan emoji 🎬 atau 🎵 di awal setiap rekomendasi, 1-2 baris pendek per item.
 - Untuk rekomendasi tempat/lokasi: gunakan emoji penanda pas di awal (☕ untuk cafe, 📚 untuk toko buku, 🍔 untuk restoran, 🏬 untuk mall, 📍 untuk tempat umum) beserta jarak (km) dan alamat singkat.
-- Untuk kuota: WAJIB sampaikan rincian 🌐 OpenRouter Model Rotation (model aktif yang digunakan saat ini, sisa request & token spesifik model aktif tersebut sebelum rotasi, model berikutnya pada antrean rotasi, total pemakaian, dan sisa model antrean sebelum fallback), serta kuota cadangan (⚡ Groq API dan 🛠️ Gemini API) secara terpisah di baris-baris terpisah yang rapi.
+- Untuk kuota: WAJIB sampaikan laporan kuota 6 AI provider (OpenRouter, Groq, Gemini, DeepInfra, Mistral, Cerebras) dengan rincian Terpakai, Sisa kuota, dan Status (✅ Aman / ❌ Habis) secara rapi di baris-baris terpisah. Jawab secara presisi tanpa tanda Markdown tebal/miring.
 - Untuk pesan suara: konfirmasi singkat bahwa voice note telah dikirim ke chat.
 - Untuk Google Drive: sampaikan daftar file/folder dengan emoji 📂 untuk folder dan 📄 untuk file di baris terpisah secara rapi.
 - Untuk hasil pencarian internet: sampaikan ringkasan informatif secara profesional dan jelas.

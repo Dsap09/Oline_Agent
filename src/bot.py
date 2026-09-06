@@ -173,7 +173,7 @@ HEAVY_KEYWORDS = {
     "rekomendasi": ["rekomendasi", "film", "lagu", "seri", "anime"],
     "suara": ["suara", "nyanyi", "gombal", "puisi", "voice note", "vn"],
     "jurnal": ["jurnal", "catat", "rekap jurnal"],
-    "kuota": ["kuota", "token", "quota"],
+    "kuota": ["kuota", "token", "quota", "cek kuota ai", "kuota ai", "pemakaian ai", "status ai", "cek ai quota", "sisa kuota", "sisa token"],
     "drive": [
         "drive", "database", "folder", "simpan file", "buat folder",
         "cari file", "tampilkan isi", "kirim file", "upload", "download", "file",

@@ -7,7 +7,7 @@ import base64
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 
@@ -30,6 +30,7 @@ PROGRESS_MSG_PREFIX = "progres_msg_id"
 ERROR_DIAGNOSIS_PREFIX = "last_error_diagnosis"
 ERROR_SIGNATURE_PREFIX = "last_error_signature"
 CHECKPOINT_PREFIX = "task_checkpoint"
+AI_USAGE_PREFIX = "ai_usage"
 
 
 
@@ -741,4 +742,71 @@ async def delete_checkpoint(chat_id: int) -> bool:
     if result is not None:
         logger.info("Deleted task checkpoint for chat_id %s", chat_id)
     return result is not None
+
+
+# --- Multi-Provider AI Usage Tracking (brief.md) ---
+
+async def increment_usage(provider: str, usage: dict) -> bool:
+    """
+    Menambahkan jumlah request & token terpakai hari ini (zona waktu WIB) ke Vercel KV.
+    Key format: ai_usage:<provider>:YYYY-MM-DD
+    TTL 24 jam (86400 detik).
+    """
+    if not provider:
+        return False
+
+    wib = timezone(timedelta(hours=7))
+    today = datetime.now(wib).strftime("%Y-%m-%d")
+    key = f"{AI_USAGE_PREFIX}:{provider}:{today}"
+
+    req_add = usage.get("request", 1)
+    tok_add = usage.get("token", 0)
+
+    existing = await _kv_request(["GET", key])
+    current = {"request": 0, "token": 0}
+    if existing and existing.get("result"):
+        try:
+            data = existing["result"]
+            if isinstance(data, str):
+                current = json.loads(data)
+            elif isinstance(data, dict):
+                current = data
+        except Exception:
+            current = {"request": 0, "token": 0}
+
+    current["request"] = current.get("request", 0) + req_add
+    current["token"] = current.get("token", 0) + tok_add
+
+    res = await _kv_request(["SET", key, json.dumps(current, ensure_ascii=False), "EX", "86400"])
+    return res is not None
+
+
+async def get_all_ai_usage() -> dict[str, dict[str, int]]:
+    """
+    Mengambil data pemakaian AI hari ini (WIB) untuk semua provider:
+    openrouter, groq, gemini, deepinfra, mistral, cerebras.
+    """
+    wib = timezone(timedelta(hours=7))
+    today = datetime.now(wib).strftime("%Y-%m-%d")
+    providers = ["openrouter", "groq", "gemini", "deepinfra", "mistral", "cerebras"]
+
+    result = {}
+    for provider in providers:
+        key = f"{AI_USAGE_PREFIX}:{provider}:{today}"
+        kv_res = await _kv_request(["GET", key])
+        if kv_res and kv_res.get("result"):
+            try:
+                data = kv_res["result"]
+                if isinstance(data, str):
+                    result[provider] = json.loads(data)
+                elif isinstance(data, dict):
+                    result[provider] = data
+                else:
+                    result[provider] = {"request": 0, "token": 0}
+            except Exception:
+                result[provider] = {"request": 0, "token": 0}
+        else:
+            result[provider] = {"request": 0, "token": 0}
+
+    return result
 

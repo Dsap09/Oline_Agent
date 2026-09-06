@@ -80,6 +80,10 @@ async def chat_cerebras(
     )
     response_message = response.choices[0].message
 
+    total_tokens = 0
+    if hasattr(response, "usage") and response.usage:
+        total_tokens += getattr(response.usage, "total_tokens", 0)
+
     max_iterations = 3
     iteration = 0
 
@@ -151,6 +155,14 @@ async def chat_cerebras(
             client.chat.completions.create, **follow_kwargs
         )
         response_message = response.choices[0].message
+        if hasattr(response, "usage") and response.usage:
+            total_tokens += getattr(response.usage, "total_tokens", 0)
+
+    try:
+        from src.kv import increment_usage
+        await increment_usage("cerebras", {"request": 1, "token": total_tokens})
+    except Exception as kv_err:
+        logger.warning("Failed to increment cerebras usage: %s", str(kv_err))
 
     final_text = response_message.content or ""
     return final_text.strip()

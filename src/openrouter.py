@@ -99,12 +99,12 @@ async def save_openrouter_rate_limits(model: str, headers: Any) -> None:
         logger.warning("Gagal menyimpan rate limit OpenRouter: %s", str(e))
 
 
-async def record_openrouter_usage(chat_id: int, model: str, req_count: int = 1) -> None:
+async def record_openrouter_usage(chat_id: int, model: str, req_count: int = 1, tokens: int = 0) -> None:
     """
     Mencatat jumlah penggunaan request per model dan total untuk hari ini ke Vercel KV & Local Cache.
     """
     try:
-        from src.kv import set_cache, get_cache
+        from src.kv import set_cache, get_cache, increment_usage
         today = datetime.now().strftime("%Y-%m-%d")
 
         # Model specific usage
@@ -120,6 +120,9 @@ async def record_openrouter_usage(chat_id: int, model: str, req_count: int = 1) 
         tot_count = int(cur_tot or "0") + req_count
         _LOCAL_KV_STORE[key_total] = str(tot_count)
         await set_cache(key_total, str(tot_count), ttl_seconds=86400)
+
+        # Global AI usage tracking (brief.md)
+        await increment_usage("openrouter", {"request": req_count, "token": tokens})
     except Exception as e:
         logger.warning("Gagal mencatat pemakaian OpenRouter: %s", str(e))
 
@@ -278,6 +281,9 @@ async def chat_openrouter(
                 await save_openrouter_rate_limits(model, resp.headers)
 
                 res_json = resp.json()
+                usage_meta = res_json.get("usage", {})
+                tokens_count = usage_meta.get("total_tokens", 0) if isinstance(usage_meta, dict) else 0
+
                 choices = res_json.get("choices", [])
                 if not choices:
                     logger.warning("OpenRouter model %s mengembalikan choices kosong. Mencoba model berikutnya...", model)
@@ -290,7 +296,7 @@ async def chat_openrouter(
                 if not tool_calls:
                     content = msg_obj.get("content", "") or ""
                     if content.strip():
-                        await record_openrouter_usage(chat_id, model, 1)
+                        await record_openrouter_usage(chat_id, model, 1, tokens=tokens_count)
                         # Jika berhasil, hapus dari _LIMITED_MODELS jika sebelumnya ada
                         _LIMITED_MODELS.discard(model)
                         return content.strip()
@@ -328,11 +334,15 @@ async def chat_openrouter(
                 if followup_resp.status_code == 200:
                     await save_openrouter_rate_limits(model, followup_resp.headers)
                     followup_json = followup_resp.json()
+                    followup_usage = followup_json.get("usage", {})
+                    if isinstance(followup_usage, dict):
+                        tokens_count += followup_usage.get("total_tokens", 0)
+
                     followup_choices = followup_json.get("choices", [])
                     if followup_choices:
                         final_text = followup_choices[0].get("message", {}).get("content", "") or ""
                         if final_text.strip():
-                            await record_openrouter_usage(chat_id, model, 1)
+                            await record_openrouter_usage(chat_id, model, 1, tokens=tokens_count)
                             _LIMITED_MODELS.discard(model)
                             return final_text.strip()
 

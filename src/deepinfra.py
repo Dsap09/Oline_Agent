@@ -179,6 +179,12 @@ async def chat_deepinfra(
     # Extract final text
     final_text = response_message.content or ""
 
+    try:
+        from src.kv import increment_usage
+        await increment_usage("deepinfra", {"request": 1, "token": total_tokens})
+    except Exception as kv_err:
+        logger.warning("Failed to increment deepinfra usage: %s", str(kv_err))
+
     if total_tokens > 0:
         logger.info(
             "DeepInfra (%s) completed. Total tokens: %d",

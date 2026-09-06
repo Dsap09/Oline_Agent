@@ -109,6 +109,12 @@ async def chat_groq(
                             except Exception as kv_err:
                                 logger.warning("Failed to save Groq token usage: %s", str(kv_err))
 
+                        try:
+                            from src.kv import increment_usage
+                            await increment_usage("groq", {"request": 1, "token": tokens_used})
+                        except Exception as kv_err:
+                            logger.warning("Failed to increment groq usage: %s", str(kv_err))
+
                         return content.strip()
 
                 raise ValueError("Groq returned empty response choices.")
@@ -209,6 +215,12 @@ async def chat_groq_with_tools(
 
                 if not tool_calls:
                     content = response_message.content or ""
+                    try:
+                        from src.kv import increment_usage
+                        await increment_usage("groq", {"request": 1, "token": total_tokens})
+                    except Exception as kv_err:
+                        logger.warning("Failed to increment groq usage: %s", str(kv_err))
+
                     if chat_id and total_tokens > 0:
                         try:
                             from src.kv import save_groq_usage
@@ -286,6 +298,12 @@ async def chat_groq_with_tools(
                         total_tokens += usage.get("total_tokens", 0)
                     else:
                         total_tokens += getattr(usage, "total_tokens", 0)
+
+                try:
+                    from src.kv import increment_usage
+                    await increment_usage("groq", {"request": 1, "token": total_tokens})
+                except Exception as kv_err:
+                    logger.warning("Failed to increment groq usage: %s", str(kv_err))
 
                 if chat_id and total_tokens > 0:
                     try:

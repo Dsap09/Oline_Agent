@@ -1,0 +1,42 @@
+"""
+Konfigurasi limit dan parameter provider AI untuk Oline bot.
+"""
+
+PROVIDER_LIMITS = {
+    "openrouter": {
+        "type": "request",
+        "total": 50,
+        "period": "hari",
+        "label": "OpenRouter (Chat Utama)",
+    },
+    "groq": {
+        "type": "token",
+        "total": 14_400_000,
+        "period": "hari",
+        "label": "Groq (Cadangan Fast Path)",
+    },
+    "gemini": {
+        "type": "token",
+        "total": 1_000_000,
+        "period": "hari",
+        "label": "Gemini (Cadangan Slow Path)",
+    },
+    "deepinfra": {
+        "type": "saldo",
+        "total": 5.0,
+        "period": "saldo",
+        "label": "DeepSeek (Landing Page)",
+    },
+    "mistral": {
+        "type": "token",
+        "total": 1_000_000_000,
+        "period": "bulan",
+        "label": "Mistral AI (Tools)",
+    },
+    "cerebras": {
+        "type": "token",
+        "total": 1_000_000,
+        "period": "hari",
+        "label": "Cerebras (Cadangan)",
+    },
+}
