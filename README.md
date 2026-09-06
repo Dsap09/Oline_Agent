@@ -107,8 +107,8 @@ Oline Agent adalah bot Telegram asisten pribadi berpersona Gen-Z yang cerdas, ce
 ### 1. Clone & Install Dependencies
 
 ```bash
-git clone https://github.com/Dsap09/Oline_Personal.git
-cd Oline_Personal
+git clone https://github.com/Dsap09/Oline_Agent.git
+cd Oline_Agent
 pip install -r requirements.txt
 ```
 
@@ -183,7 +183,7 @@ Oline: 🔍 (Membaca runtime log Vercel mode error)
 
 User: Olin, tambahkan fitur baru di dirimu
 Oline: 🤖 (Membaca file repo, membuat branch oline-update/fitur-baru, commit & push, serta membuka PR)
-       Pull Request berhasil dibuat: https://github.com/Dsap09/Oline_Personal/pull/1
+       Pull Request berhasil dibuat: https://github.com/Dsap09/Oline_Agent/pull/1
        Silakan review dan merge ya!
 
 User: Cek saham BBCA dong

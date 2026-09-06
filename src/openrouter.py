@@ -231,8 +231,8 @@ async def chat_openrouter(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/Dsap09/Oline_Personal",
-        "X-Title": "Oline Personal Assistant",
+        "HTTP-Referer": "https://github.com/Dsap09/Oline_Agent",
+        "X-Title": "Oline Agent",
     }
 
     from src.tools import execute_tool
