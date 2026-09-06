@@ -27,6 +27,9 @@ PENDING_FILE_PREFIX = "pending_file"
 LOCATION_PREFIX = "location"
 PENDING_TASK_PREFIX = "pending_task"
 PROGRESS_MSG_PREFIX = "progres_msg_id"
+ERROR_DIAGNOSIS_PREFIX = "last_error_diagnosis"
+ERROR_SIGNATURE_PREFIX = "last_error_signature"
+CHECKPOINT_PREFIX = "task_checkpoint"
 
 
 
@@ -639,5 +642,103 @@ async def update_pending_task_retry_count(chat_id: int, task: dict) -> bool:
     task["retry_count"] = current_count + 1
     payload = json.dumps(task, ensure_ascii=False)
     result = await _kv_request(["SET", key, payload, "EX", "3600"])
+    return result is not None
+
+
+# --- Error Diagnosis & Self-Monitoring Functions ---
+
+async def save_last_error_diagnosis(chat_id: int, diagnosis: dict) -> bool:
+    """
+    Menyimpan hasil diagnosis error Vercel log terbaru ke KV.
+    TTL 24 jam (86400 detik).
+    """
+    key = f"{ERROR_DIAGNOSIS_PREFIX}:{chat_id}"
+    payload = json.dumps(diagnosis, ensure_ascii=False)
+    result = await _kv_request(["SET", key, payload, "EX", "86400"])
+    if result is not None:
+        logger.info("Saved last error diagnosis for chat_id %s", chat_id)
+    return result is not None
+
+
+async def get_last_error_diagnosis(chat_id: int) -> Optional[dict]:
+    """
+    Mengambil diagnosis error Vercel log tersimpan dari KV.
+    """
+    key = f"{ERROR_DIAGNOSIS_PREFIX}:{chat_id}"
+    result = await _kv_request(["GET", key])
+    if result and result.get("result"):
+        try:
+            data = result["result"]
+            if isinstance(data, str):
+                return json.loads(data)
+            if isinstance(data, dict):
+                return data
+        except Exception as e:
+            logger.warning("Error reading error diagnosis from KV: %s", str(e))
+    return None
+
+
+async def save_last_error_signature(chat_id: int, signature: str) -> bool:
+    """
+    Menyimpan MD5 hash signature log error terbaru ke KV.
+    TTL 24 jam (86400 detik).
+    """
+    key = f"{ERROR_SIGNATURE_PREFIX}:{chat_id}"
+    result = await _kv_request(["SET", key, signature, "EX", "86400"])
+    return result is not None
+
+
+async def get_last_error_signature(chat_id: int) -> Optional[str]:
+    """
+    Mengambil MD5 hash signature log error tersimpan dari KV.
+    """
+    key = f"{ERROR_SIGNATURE_PREFIX}:{chat_id}"
+    result = await _kv_request(["GET", key])
+    if result and result.get("result"):
+        return str(result["result"])
+    return None
+
+
+# --- Task Checkpoint Functions ---
+
+async def save_checkpoint(chat_id: int, checkpoint: dict) -> bool:
+    """
+    Menyimpan checkpoint task ke KV.
+    TTL 2 jam (7200 detik).
+    """
+    key = f"{CHECKPOINT_PREFIX}:{chat_id}"
+    payload = json.dumps(checkpoint, ensure_ascii=False)
+    result = await _kv_request(["SET", key, payload, "EX", "7200"])
+    if result is not None:
+        logger.info("Saved task checkpoint for chat_id %s (step: %s)", chat_id, checkpoint.get("langkah_sekarang"))
+    return result is not None
+
+
+async def get_checkpoint(chat_id: int) -> Optional[dict]:
+    """
+    Mengambil checkpoint task tersimpan dari KV.
+    """
+    key = f"{CHECKPOINT_PREFIX}:{chat_id}"
+    result = await _kv_request(["GET", key])
+    if result and result.get("result"):
+        try:
+            data = result["result"]
+            if isinstance(data, str):
+                return json.loads(data)
+            if isinstance(data, dict):
+                return data
+        except Exception as e:
+            logger.warning("Error reading task checkpoint from KV: %s", str(e))
+    return None
+
+
+async def delete_checkpoint(chat_id: int) -> bool:
+    """
+    Menghapus checkpoint task dari KV setelah selesai atau dibatalkan.
+    """
+    key = f"{CHECKPOINT_PREFIX}:{chat_id}"
+    result = await _kv_request(["DEL", key])
+    if result is not None:
+        logger.info("Deleted task checkpoint for chat_id %s", chat_id)
     return result is not None
 

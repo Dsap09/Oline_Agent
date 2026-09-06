@@ -60,7 +60,7 @@ async def create_github_branch(branch_name: str, from_branch: str = "main") -> s
         return "Credentials GITHUB_TOKEN, GITHUB_OWNER, atau GITHUB_REPO belum dikonfigurasi."
 
     clean_branch = branch_name.strip()
-    if not clean_branch.startswith("oline-update/"):
+    if not clean_branch.startswith("oline-update/") and not clean_branch.startswith("oline-fix/"):
         clean_branch = f"oline-update/{clean_branch.lstrip('/')}"
 
     try:
@@ -138,3 +138,39 @@ async def create_pull_request(
         err_str = str(e)
         logger.error("Failed to create Pull Request for branch '%s': %s", clean_branch, err_str)
         return f"Gagal membuat Pull Request: {err_str}"
+
+
+async def ai_fix_code(current_code: str, error_desc: str) -> str:
+    """
+    Meminta AI (Gemini) untuk memperbaiki kode berdasarkan deskripsi error/diagnosis.
+    """
+    prompt = (
+        f"Berikut adalah kode sumber file yang mengalami error:\n\n"
+        f"```python\n{current_code}\n```\n\n"
+        f"Detail Error & Diagnosis:\n{error_desc}\n\n"
+        f"Tolong perbaiki kode tersebut. Kembalikan HANYA kode Python lengkap yang sudah diperbaiki "
+        f"tanpa penjelasan tambahan, tanpa tanda backtick markdown, atau teks ekstra."
+    )
+
+    try:
+        from src.gemini import chat_with_oline
+        fixed = await chat_with_oline(
+            chat_id=0,
+            user_message=prompt,
+            user_name="System",
+            use_gemini_only=True,
+        )
+        if fixed:
+            cleaned = fixed.strip()
+            if cleaned.startswith("```"):
+                lines = cleaned.splitlines()
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                cleaned = "\n".join(lines).strip()
+            return cleaned if cleaned else current_code
+    except Exception as e:
+        logger.error("Error in ai_fix_code: %s", str(e))
+
+    return current_code

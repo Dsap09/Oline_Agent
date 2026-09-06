@@ -292,6 +292,16 @@ RETRY_KEYWORDS = [
     "jalankan", "coba", "pukul", "eksekusi",
 ]
 
+PERBAIKAN_KEYWORDS = ["perbaiki", "benerin", "fix", "solusi"]
+
+
+def is_fix_request(text: str) -> bool:
+    """Mendeteksi apakah pesan pengguna meminta perbaikan error / bug."""
+    if not text:
+        return False
+    text_lower = text.lower().strip()
+    return any(kw in text_lower for kw in PERBAIKAN_KEYWORDS)
+
 
 def is_skip_request(text: str) -> bool:
     """Mendeteksi apakah pesan pengguna meminta mengabaikan/skip pending task."""
@@ -434,6 +444,22 @@ async def handle_message(
         except Exception as rule_err:
             logger.warning("Gagal menyimpan aturan ke Notion: %s", str(rule_err))
 
+    # Deteksi jika pesan merupakan permintaan perbaikan error (brief.md poin 4)
+    if is_fix_request(user_message):
+        from src.handlers import lakukan_perbaikan_via_github
+        from src.kv import get_last_error_diagnosis
+        diagnosis = await get_last_error_diagnosis(chat_id)
+        if diagnosis:
+            await update.effective_chat.send_action("typing")
+            pr_res = await lakukan_perbaikan_via_github(chat_id, diagnosis)
+            await update.effective_chat.send_message(pr_res)
+            return
+        else:
+            await update.effective_chat.send_message(
+                "Aku belum punya diagnosis error. Coba tanya dulu 'ada error apa?'"
+            )
+            return
+
     # Deteksi intent untuk menentukan Fast Path / Slow Path (dengan dukungan konteks percakapan)
     intent = await detect_intent_async(user_message, chat_id)
 
@@ -467,13 +493,21 @@ async def handle_message(
     if intent is not None:
         await update.effective_chat.send_action("typing")
 
-    # Proses lewat pipeline AI (DeepInfra untuk preview/deploy, Groq/Gemini untuk lainnya)
+    # Proses lewat pipeline AI
     response = await chat_with_oline(
         chat_id,
         user_message,
         user_name=user_name,
         intent=intent,
     )
+
+    # Otomatis panggil self_monitor untuk slow path (fitur berat) per brief.md
+    if intent is not None:
+        try:
+            from src.self_monitor import self_monitor
+            asyncio.create_task(self_monitor(chat_id))
+        except Exception as sm_err:
+            logger.warning("Failed to trigger self_monitor: %s", str(sm_err))
 
     # Kirim respons (split jika terlalu panjang)
     if len(response) > 4096:

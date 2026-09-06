@@ -404,82 +404,33 @@ async def chat_with_oline(
         # 2. Build system prompt
         system_prompt = await _build_system_prompt_async(memory, user_name=user_name)
 
-        # 2.3 DeepInfra Path: untuk intent preview, deploy, & design_reference, gunakan DeepSeek V4 Flash
-        if intent in ("preview", "deploy", "design_reference") and os.environ.get("DEEPINFRA_API_KEY", "").strip():
-            try:
-                from src.deepinfra import chat_deepinfra
+        # Tentukan jalur fallback optimal sesuai brief.md
+        if intent is None:
+            jalur = "fast"
+        elif intent in ("preview", "deploy", "design_reference"):
+            jalur = "landing"
+        else:
+            jalur = "tools"
 
-                logger.info("Executing DeepInfra Path (DeepSeek V4 Flash) for intent '%s', chat_id: %s", intent, chat_id)
+        tool_declarations = get_tools_for_intent(intent)
 
-                tool_declarations = get_tools_for_intent(intent)
-                deepinfra_response = await chat_deepinfra(
-                    system_prompt=system_prompt,
-                    history=history,
-                    user_message=user_message,
-                    tool_declarations=tool_declarations,
-                    chat_id=chat_id,
-                )
-
-                if deepinfra_response:
-                    # Update riwayat percakapan
-                    history.append({"role": "user", "text": user_message})
-                    history.append({"role": "model", "text": deepinfra_response})
-                    await save_history(chat_id, history)
-                    return deepinfra_response
-
-            except Exception as e:
-                logger.warning(
-                    "DeepInfra Path gagal (%s). Fallback ke Gemini untuk intent '%s'...",
-                    str(e), intent,
-                )
-                # Fallback: lanjut ke pipeline Gemini di bawah
-
-        # 2.4 OpenRouter Path (Primary Model dengan Rotasi untuk Chat & Fitur Umum)
-        if intent not in ("preview", "deploy", "design_reference") and os.environ.get("OPENROUTER_API_KEY", "").strip():
-            try:
-                from src.openrouter import chat_openrouter
-
-                tool_declarations = get_tools_for_intent(intent)
-                logger.info("Executing OpenRouter Model Rotation for intent '%s', chat_id: %s", intent, chat_id)
-                openrouter_response = await chat_openrouter(
-                    system_prompt=system_prompt,
-                    history=history,
-                    user_message=user_message,
-                    tool_declarations=tool_declarations,
-                    chat_id=chat_id,
-                )
-
-                if openrouter_response:
-                    history.append({"role": "user", "text": user_message})
-                    history.append({"role": "model", "text": openrouter_response})
-                    await save_history(chat_id, history)
-                    return openrouter_response
-
-            except Exception as openrouter_err:
-                logger.warning(
-                    "OpenRouter Path gagal (%s). Beralih ke cadangan Groq/Gemini...", str(openrouter_err)
-                )
-
-        # 2.5 Fast Path via Groq API (jika intent None dan GROQ_API_KEY diset)
-        if intent is None and os.environ.get("GROQ_API_KEY", "").strip():
-            try:
-                from src.groq import chat_groq
-
-                logger.info("Executing Fast Path via Groq API for chat_id: %s", chat_id)
-                groq_response = await chat_groq(
-                    system_prompt, history, user_message, chat_id=chat_id
-                )
-
-                if groq_response:
-                    # Update riwayat percakapan
-                    history.append({"role": "user", "text": user_message})
-                    history.append({"role": "model", "text": groq_response})
-                    await save_history(chat_id, history)
-                    return groq_response
-            except Exception as e:
-                logger.warning(
-                    "Groq Fast Path failed (%s). Falling back to Gemini...", str(e)
-                )
+        try:
+            from src.handlers import call_model_with_fallback
+            fallback_response = await call_model_with_fallback(
+                jalur=jalur,
+                system_prompt=system_prompt,
+                history=history,
+                user_message=user_message,
+                tools=tool_declarations,
+                chat_id=chat_id,
+            )
+            if fallback_response and "Semua model AI sedang error" not in fallback_response:
+                history.append({"role": "user", "text": user_message})
+                history.append({"role": "model", "text": fallback_response})
+                await save_history(chat_id, history)
+                return fallback_response
+        except Exception as fallback_err:
+            logger.warning("Fallback chain '%s' failed: %s. Falling back to Gemini...", jalur, str(fallback_err))
 
         # 3. Buat tools yang terfilter sesuai intent (Fast Path Gemini fallback: tools = None)
         tool_declarations = get_tools_for_intent(intent)

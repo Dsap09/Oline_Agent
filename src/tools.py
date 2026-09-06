@@ -2774,7 +2774,33 @@ async def execute_tool(
         return await executor(chat_id=chat_id, **args)
     else:
         result = await executor(**args)
-        # Auto-log aktivitas penting ke Neo4j (fire-and-forget)
+        # Auto-log aktivitas penting ke Neo4j & update Task Checkpoint data
+        if chat_id and chat_id != 0:
+            try:
+                from src.kv import get_checkpoint, save_checkpoint
+                cp = await get_checkpoint(chat_id)
+                if cp and isinstance(cp, dict):
+                    cp_data = cp.get("data", {})
+                    if func_name == "preview_with_codepen":
+                        cp_data["html"] = args.get("html")
+                        cp_data["css"] = args.get("css")
+                        cp_data["js"] = args.get("js")
+                        if isinstance(result, dict) and result.get("url"):
+                            cp_data["preview_url"] = result.get("url")
+                        elif isinstance(result, str) and "http" in result:
+                            cp_data["preview_url"] = result
+                        if "preview" not in cp.get("langkah_selesai", []):
+                            cp["langkah_selesai"].append("preview")
+                    elif func_name == "deploy_to_vercel":
+                        if isinstance(result, dict) and result.get("url"):
+                            cp_data["deploy_url"] = result.get("url")
+                        if "deploy" not in cp.get("langkah_selesai", []):
+                            cp["langkah_selesai"].append("deploy")
+                    cp["data"] = cp_data
+                    await save_checkpoint(chat_id, cp)
+            except Exception as cp_err:
+                logger.warning("Failed to update checkpoint data in execute_tool: %s", str(cp_err))
+
         if isinstance(result, dict) and result.get("status") == "success":
             try:
                 from src.neo4j_client import auto_log_aktivitas
