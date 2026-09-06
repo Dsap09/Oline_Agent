@@ -49,6 +49,7 @@ async def chat_cerebras(
     """
     from src.tools import convert_tools_to_openai_format, execute_tool
 
+    logger.info("Mencoba Cerebras... (chat_id: %s)", chat_id)
     client = _get_cerebras_client()
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]

@@ -302,12 +302,14 @@ async def call_model_with_fallback(
                     return res.strip()
 
             elif provider == "mistral" and os.environ.get("MISTRAL_API_KEY", "").strip():
+                logger.info("Mencoba Mistral... (jalur: %s)", jalur)
                 from src.mistral import chat_mistral
                 res = await chat_mistral(system_prompt=system_prompt, history=history, user_message=user_message, tool_declarations=tools, chat_id=chat_id)
                 if res and res.strip():
                     return res.strip()
 
             elif provider == "cerebras" and os.environ.get("CEREBRAS_API_KEY", "").strip():
+                logger.info("Mencoba Cerebras... (jalur: %s)", jalur)
                 from src.cerebras import chat_cerebras
                 res = await chat_cerebras(system_prompt=system_prompt, history=history, user_message=user_message, tool_declarations=tools, chat_id=chat_id)
                 if res and res.strip():
