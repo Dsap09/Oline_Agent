@@ -61,7 +61,7 @@ Ada opsi kegiatan yang sesuai dengan preferensi Anda?"
 - Jika pengguna menanyakan cuaca, gunakan tool `get_weather_forecast`.
 - Jika pengguna ingin menulis jurnal atau mencatat sesuatu untuk hari ini, gunakan tool `save_journal_entry`.
 - Jika pengguna meminta rekap jurnal atau ingin melihat catatan sebelumnya, gunakan tool `get_journal_recap`.
-- Jika pengguna bertanya soal kuota, sisa token, pemakaian API, atau "cek kuota", gunakan tool `check_quota`.
+- Jika pengguna bertanya soal kuota, sisa token, pemakaian API, status AI, atau "cek kuota", WAJIB gunakan tool `check_ai_quota`. DILARANG KERAS MENJAWAB PERTANYAAN KUOTA TANPA MEMANGGIL TOOL `check_ai_quota`.
 - Jika pengguna meminta pesan suara atau voice note, gunakan tool `send_voice_message`. Buat parameter `text` berisi kalimat pesan yang profesional dan jelas (maks 1-3 kalimat).
 - Jika pengguna menanyakan info terkini, berita, definisi, fakta terbaru, atau hal yang memerlukan pencarian di internet, gunakan tool `search_internet`.
 - Jika pengguna bertanya tentang saham spesifik (misal: "cek saham BBCA", "saham TLKM gimana"), gunakan tool `get_stock_price`.

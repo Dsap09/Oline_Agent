@@ -167,11 +167,21 @@ TOOL_DECLARATIONS = [
         },
     },
     {
+        "name": "check_ai_quota",
+        "description": (
+            "Mengecek laporan kuota 6 AI provider (OpenRouter, Groq, Gemini, DeepInfra, Mistral, Cerebras) terpakai dan sisa kuota hari ini. "
+            "WAJIB digunakan saat pengguna bertanya tentang kuota, sisa token, pemakaian AI, status AI, atau 'cek kuota'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "check_quota",
         "description": (
-            "Mengecek sisa kuota token dan pemakaian API hari ini (Gemini API & Groq API). "
-            "Gunakan saat pengguna bertanya tentang kuota, sisa token, "
-            "pemakaian API, atau berapa banyak token yang sudah terpakai hari ini."
+            "Mengecek sisa kuota token dan pemakaian API hari ini (Gemini API & Groq API)."
         ),
 
         "parameters": {
@@ -734,7 +744,7 @@ TOOLS_BY_INTENT = {
     "rekomendasi": ["get_movie_recommendation", "get_music_recommendation"],
     "suara": ["send_voice_message"],
     "jurnal": ["save_journal_entry", "get_journal_recap"],
-    "kuota": ["check_quota"],
+    "kuota": ["check_ai_quota", "check_quota"],
     "search": ["search_internet", "read_vercel_logs"],
     "saham": ["get_stock_price", "get_market_summary"],
     "drive": [
@@ -1146,7 +1156,7 @@ def format_quota_report(usage_data: dict) -> str:
     return "\n".join(lines)
 
 
-async def check_ai_quota() -> str:
+async def check_ai_quota(chat_id: int = 0) -> str:
     """
     Menampilkan laporan pemakaian dan sisa semua model AI (brief.md).
     """
@@ -2748,7 +2758,7 @@ TOOL_EXECUTORS = {
     "get_weather_forecast": get_weather_forecast,
     "save_journal_entry": execute_save_journal,
     "get_journal_recap": execute_get_journal_recap,
-    "check_quota": execute_check_quota,
+    "check_quota": check_ai_quota,
     "check_ai_quota": check_ai_quota,
     "send_voice_message": execute_send_voice_message,
     "search_internet": search_internet,
@@ -2856,8 +2866,8 @@ async def execute_tool(
                 start_date=args.get("start_date"),
                 end_date=args.get("end_date"),
             )
-    elif func_name == "check_quota":
-        return await executor(chat_id=chat_id)
+    elif func_name in ("check_quota", "check_ai_quota"):
+        return await check_ai_quota(chat_id=chat_id)
     elif func_name == "send_voice_message":
         return await executor(chat_id=chat_id, text=args.get("text", ""))
     elif func_name == "get_nearby_places":
