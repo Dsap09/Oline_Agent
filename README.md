@@ -1,6 +1,6 @@
-# Oline – Personal AI Telegram Bot 🤖
+# Oline Agent 🤖
 
-Oline adalah bot Telegram asisten pribadi berpersona Gen-Z yang cerdas, cepat, dan serba bisa. Dibangun menggunakan **Python 3.10+**, **Google Gemini AI**, **Groq API**, **DeepInfra (DeepSeek V4 Flash)**, **PyGithub**, **Neo4j AuraDB**, **Moondream VLM**, **Notion API**, dan dideploy di **Vercel Serverless Functions**.
+Oline Agent adalah bot Telegram asisten pribadi berpersona Gen-Z yang cerdas, cepat, dan serba bisa. Dibangun menggunakan **Python 3.10+**, **Google Gemini AI**, **Groq API**, **DeepInfra (DeepSeek V4 Flash)**, **PyGithub**, **Neo4j AuraDB**, **Moondream VLM**, **Notion API**, dan dideploy di **Vercel Serverless Functions**.
 
 ---
 
