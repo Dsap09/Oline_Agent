@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 async def check_vercel_api() -> bool:
     """Mengecek konektivitas dan kesehatan Vercel API."""
-    token = os.environ.get("VERCEL_API_TOKEN", "").strip()
+    token = (os.environ.get("VERCEL_API_TOKEN", "") or os.environ.get("VERCEL_TOKEN", "")).strip()
     if not token:
-        logger.warning("HealthCheck Vercel: VERCEL_API_TOKEN tidak diset.")
+        logger.warning("HealthCheck Vercel: VERCEL_API_TOKEN / VERCEL_TOKEN tidak diset.")
         return False
 
     url = "https://api.vercel.com/v13/deployments"
@@ -100,10 +100,10 @@ async def check_drive_api() -> bool:
 async def check_neo4j() -> bool:
     """Mengecek konektivitas database Neo4j AuraDB."""
     neo4j_uri = os.environ.get("NEO4J_URI", "").strip()
-    neo4j_user = os.environ.get("NEO4J_USER", "").strip()
+    neo4j_user = os.environ.get("NEO4J_USER", "neo4j").strip()
     neo4j_pass = os.environ.get("NEO4J_PASSWORD", "").strip()
 
-    if not neo4j_uri or not neo4j_user or not neo4j_pass:
+    if not neo4j_uri or not neo4j_pass:
         logger.warning("HealthCheck Neo4j: Env vars tidak lengkap.")
         return False
 
@@ -124,13 +124,16 @@ async def check_neo4j() -> bool:
 
 
 async def check_ddg() -> bool:
-    """Mengecek ketersediaan pencarian internet (DuckDuckGo / DDGS)."""
+    """Mengecek ketersediaan pencarian internet (DuckDuckGo & Bing fallback)."""
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
             resp = await client.get("https://html.duckduckgo.com/html/?q=test")
-            return resp.status_code == 200
+            if resp.status_code == 200:
+                return True
+            resp_bing = await client.get("https://www.bing.com/search?q=test")
+            return resp_bing.status_code == 200
     except Exception as e:
-        logger.warning("HealthCheck DDG error: %s", str(e))
+        logger.warning("HealthCheck Search error: %s", str(e))
         return False
 
 

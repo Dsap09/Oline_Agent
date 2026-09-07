@@ -11,10 +11,6 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-NEO4J_URI = os.environ.get("NEO4J_URI", "").strip()
-NEO4J_USER = os.environ.get("NEO4J_USER", "").strip()
-NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "").strip()
-
 _driver = None
 
 
@@ -24,7 +20,11 @@ def _get_driver():
     if _driver is not None:
         return _driver
 
-    if not NEO4J_URI or not NEO4J_USER or not NEO4J_PASSWORD:
+    uri = os.environ.get("NEO4J_URI", "").strip()
+    user = os.environ.get("NEO4J_USER", "neo4j").strip()
+    password = os.environ.get("NEO4J_PASSWORD", "").strip()
+
+    if not uri or not user or not password:
         logger.warning(
             "Neo4j env vars belum lengkap (NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD). "
             "Fitur graph aktivitas tidak aktif."
@@ -33,8 +33,8 @@ def _get_driver():
 
     try:
         from neo4j import GraphDatabase
-        _driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
-        logger.info("Neo4j driver berhasil diinisialisasi: %s", NEO4J_URI)
+        _driver = GraphDatabase.driver(uri, auth=(user, password))
+        logger.info("Neo4j driver berhasil diinisialisasi: %s", uri)
         return _driver
     except Exception as e:
         logger.error("Gagal menginisialisasi Neo4j driver: %s", str(e))

@@ -1348,8 +1348,10 @@ async def execute_send_voice_message(chat_id: int, text: str) -> dict[str, Any]:
 
 async def search_internet(query: str) -> dict[str, Any]:
     """
-    Mencari informasi terkini di internet menggunakan DDGS (DuckDuckGo Search).
+    Mencari informasi terkini di internet menggunakan DDGS (DuckDuckGo Search)
+    dengan fallback otomatis ke Bing Web Search jika DDGS gagal/kosong.
     """
+    # 1. Primary Engine: DuckDuckGo Search
     try:
         def _do_search():
             try:
@@ -1361,25 +1363,49 @@ async def search_internet(query: str) -> dict[str, Any]:
                 return list(ddgs.text(query, max_results=5))
 
         results = await asyncio.to_thread(_do_search)
-        await asyncio.sleep(2)
-
-        if not results:
-            return {"message": "Informasi yang dicari tidak ditemukan."}
-
-        snippets = []
-        for r in results:
-            title = r.get("title", "")
-            body = r.get("body", "")
-            href = r.get("href", "")
-            if title and body:
-                snippets.append(f"{title}: {body} (Sumber: {href})")
-            elif title or body:
-                snippets.append(f"{title or body} (Sumber: {href})")
-
-        return {"results": "\n".join(snippets)}
+        if results:
+            snippets = []
+            for r in results:
+                title = r.get("title", "")
+                body = r.get("body", "")
+                href = r.get("href", "")
+                if title and body:
+                    snippets.append(f"{title}: {body} (Sumber: {href})")
+                elif title or body:
+                    snippets.append(f"{title or body} (Sumber: {href})")
+            if snippets:
+                return {"results": "\n".join(snippets)}
     except Exception as e:
-        logger.error("DuckDuckGo search error: %s", str(e))
-        return {"error": "Gagal mengakses koneksi internet. Silakan coba beberapa saat lagi."}
+        logger.warning("DuckDuckGo search failed: %s. Trying Bing search fallback...", str(e))
+
+    # 2. Secondary Engine: Bing Web Search Fallback
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers=headers) as client:
+            resp = await client.get("https://www.bing.com/search", params={"q": query})
+            if resp.status_code == 200:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(resp.text, "html.parser")
+                snippets = []
+                for li in soup.find_all("li", class_="b_algo")[:5]:
+                    h2 = li.find("h2")
+                    title = h2.get_text(strip=True) if h2 else ""
+                    a = h2.find("a") if h2 else None
+                    href = a.get("href", "") if a else ""
+                    p = li.find("p")
+                    caption = p.get_text(strip=True) if p else ""
+                    if title or caption:
+                        snippets.append(f"{title}: {caption} (Sumber: {href})")
+                if snippets:
+                    logger.info("Bing search fallback succeeded for query: %s", query[:30])
+                    return {"results": "\n".join(snippets)}
+    except Exception as bing_err:
+        logger.warning("Bing search fallback failed: %s", str(bing_err))
+
+    return {"error": "Gagal mengakses koneksi internet. Silakan coba beberapa saat lagi."}
 
 
 def _get_top_movers(is_gainer: bool = True, limit: int = 3) -> str:
@@ -2795,16 +2821,16 @@ async def execute_check_feature_health() -> str:
         enabled = await is_feature_enabled(feature)
         fail_count = await get_failure_count(feature)
 
-        if ok and enabled:
-            lines.append(f"✅ {feature}")
-        elif not ok and fail_count >= 3:
-            lines.append(f"❌ {feature} (gagal {fail_count}x, dinonaktifkan sementara)")
-        elif not ok:
-            lines.append(f"❌ {feature} (gagal {fail_count}x)")
-        elif not enabled:
+        if not enabled:
             lines.append(f"❌ {feature} (dinonaktifkan)")
-        else:
+        elif ok:
             lines.append(f"✅ {feature}")
+        elif fail_count >= 3:
+            lines.append(f"❌ {feature} (gagal {fail_count}x, dinonaktifkan sementara)")
+        elif fail_count > 0:
+            lines.append(f"❌ {feature} (gagal {fail_count}x)")
+        else:
+            lines.append(f"⚠️ {feature} (kredensial/endpoint belum siap)")
 
     return "\n".join(lines)
 
