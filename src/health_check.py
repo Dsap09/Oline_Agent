@@ -79,17 +79,18 @@ async def check_notion_api() -> bool:
 
 
 async def check_drive_api() -> bool:
-    """Mengecek kredensial dan ketersediaan Google Drive API."""
-    creds_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
-    creds_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-    if not creds_json and not creds_file:
-        logger.warning("HealthCheck Drive: Google Service Account credentials tidak diset.")
+    """Mengecek kredensial OAuth / Service Account dan ketersediaan Google Drive API."""
+    refresh_token = os.environ.get("GOOGLE_DRIVE_REFRESH_TOKEN", "").strip()
+    client_id = os.environ.get("GOOGLE_DRIVE_CLIENT_ID", "").strip()
+    creds_json = os.environ.get("GOOGLE_DRIVE_CREDENTIALS", "").strip()
+
+    if not (refresh_token and client_id) and not creds_json:
+        logger.warning("HealthCheck Drive: Google Drive OAuth / Credentials tidak diset.")
         return False
 
     try:
-        # Cek ketersediaan google drive client via asyncio.to_thread
-        from src.drive import _get_drive_service
-        service = await asyncio.to_thread(_get_drive_service)
+        from src.drive import get_drive_service
+        service = await asyncio.to_thread(get_drive_service)
         return service is not None
     except Exception as e:
         logger.warning("HealthCheck Drive error: %s", str(e))

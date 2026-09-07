@@ -49,17 +49,36 @@ def _get_client() -> genai.Client:
     return genai.Client(api_key=GEMINI_API_KEY)
 
 
+def _convert_schema_types_to_uppercase(schema: Any) -> Any:
+    """
+    Mengonversi nilai 'type' dalam schema dictionary ke enum kapital (misal 'object' -> 'OBJECT', 'string' -> 'STRING').
+    Google GenAI SDK & Gemini API membutuhkan tipe kapital pada deklarasi function parameters.
+    """
+    if isinstance(schema, dict):
+        new_schema = {}
+        for key, value in schema.items():
+            if key == "type" and isinstance(value, str):
+                new_schema[key] = value.upper()
+            else:
+                new_schema[key] = _convert_schema_types_to_uppercase(value)
+        return new_schema
+    elif isinstance(schema, list):
+        return [_convert_schema_types_to_uppercase(item) for item in schema]
+    return schema
+
+
 def _build_tools(tool_declarations: list[dict]) -> Optional[list[types.Tool]]:
     """Build google-genai Tool objects dari daftar deklarasi terfilter."""
     if not tool_declarations:
         return None
     function_declarations = []
     for tool_decl in tool_declarations:
+        params = _convert_schema_types_to_uppercase(tool_decl.get("parameters", {}))
         function_declarations.append(
             types.FunctionDeclaration(
                 name=tool_decl["name"],
-                description=tool_decl["description"],
-                parameters=tool_decl["parameters"],
+                description=tool_decl.get("description", ""),
+                parameters=params,
             )
         )
     return [types.Tool(function_declarations=function_declarations)]

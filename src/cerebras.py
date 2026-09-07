@@ -14,7 +14,8 @@ from src.utils import clean_tool_calls
 logger = logging.getLogger(__name__)
 
 CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
-CEREBRAS_MODEL = os.environ.get("CEREBRAS_MODEL", "llama3.3-70b").strip()
+CEREBRAS_MODEL = os.environ.get("CEREBRAS_MODEL", "llama-3.3-70b").strip()
+DEFAULT_CEREBRAS_MODELS = ["llama-3.3-70b", "llama3.1-70b", "llama3.1-8b"]
 
 
 def _get_cerebras_client():
@@ -68,19 +69,42 @@ async def chat_cerebras(
 
     openai_tools = convert_tools_to_openai_format(tool_declarations) if tool_declarations else []
 
-    kwargs: dict[str, Any] = {
-        "model": CEREBRAS_MODEL,
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 4096,
-    }
-    if openai_tools:
-        kwargs["tools"] = openai_tools
-        kwargs["tool_choice"] = "auto"
+    candidate_models = [CEREBRAS_MODEL]
+    for alt in DEFAULT_CEREBRAS_MODELS:
+        if alt not in candidate_models:
+            candidate_models.append(alt)
 
-    response = await asyncio.to_thread(
-        client.chat.completions.create, **kwargs
-    )
+    response = None
+    used_model = CEREBRAS_MODEL
+    last_err = None
+
+    for model_name in candidate_models:
+        try:
+            kwargs: dict[str, Any] = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": 0.7,
+                "max_tokens": 4096,
+            }
+            if openai_tools:
+                kwargs["tools"] = openai_tools
+                kwargs["tool_choice"] = "auto"
+
+            response = await asyncio.to_thread(
+                client.chat.completions.create, **kwargs
+            )
+            used_model = model_name
+            break
+        except Exception as e:
+            logger.warning("Cerebras model %s failed: %s. Retrying next model...", model_name, str(e))
+            last_err = e
+            continue
+
+    if response is None:
+        if last_err:
+            raise last_err
+        raise RuntimeError("Semua kandidat model Cerebras gagal.")
+
     response_message = response.choices[0].message
 
     total_tokens = 0
@@ -148,7 +172,7 @@ async def chat_cerebras(
             })
 
         follow_kwargs: dict[str, Any] = {
-            "model": CEREBRAS_MODEL,
+            "model": used_model,
             "messages": messages,
             "temperature": 0.7,
             "max_tokens": 4096,

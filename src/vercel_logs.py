@@ -13,7 +13,7 @@ from src.kv import get_cache, set_cache
 
 logger = logging.getLogger(__name__)
 
-VERCEL_API_TOKEN = os.environ.get("VERCEL_API_TOKEN", "") or os.environ.get("VERCEL_TOKEN", "")
+VERCEL_API_TOKEN = (os.environ.get("VERCEL_API_TOKEN", "") or os.environ.get("VERCEL_TOKEN", "")).strip()
 VERCEL_LOGS_URL = "https://api.vercel.com/v4/runtime-logs"
 
 
@@ -21,7 +21,7 @@ async def fetch_vercel_logs(limit: int = 10, level: Optional[str] = None) -> str
     """
     Mengambil runtime log dari Vercel API berdasarkan limit dan level (misal: error, warn).
     """
-    token = os.environ.get("VERCEL_API_TOKEN", "") or os.environ.get("VERCEL_TOKEN", "")
+    token = (os.environ.get("VERCEL_API_TOKEN", "") or os.environ.get("VERCEL_TOKEN", "")).strip()
     if not token:
         logger.warning("VERCEL_API_TOKEN environment variable is not set.")
         return "Token Vercel belum dikonfigurasi."

@@ -19,14 +19,14 @@ logger = logging.getLogger(__name__)
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 DEFAULT_OPENROUTER_MODELS = [
-    "poolside/laguna-s-2.1",
     "thinkingmachines/inkling",
-    "z-ai/glm-5.2",
+    "google/gemma-4-31b",
     "minimax/minimax-m3",
     "minimax/minimax-m2.7",
+    "z-ai/glm-5.2",
+    "poolside/laguna-s-2.1",
     "nvidia/nemotron-3-super",
     "nvidia/nemotron-3-nano-omni",
-    "google/gemma-4-31b",
     "google/gemma-4-26b-a4b",
     "cohere/north-mini-code",
 ]
