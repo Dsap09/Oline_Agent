@@ -30,7 +30,7 @@ from src.personas import (
     OLINE_SYSTEM_PROMPT,
 )
 from src.tools import TOOL_EXECUTORS, get_tools_for_intent
-from src.utils import format_date_indonesian, get_current_time_context
+from src.utils import clean_tool_calls, format_date_indonesian, get_current_time_context
 
 logger = logging.getLogger(__name__)
 
@@ -425,6 +425,7 @@ async def chat_with_oline(
                 chat_id=chat_id,
             )
             if fallback_response and "Semua model AI sedang error" not in fallback_response:
+                fallback_response = clean_tool_calls(fallback_response)
                 history.append({"role": "user", "text": user_message})
                 history.append({"role": "model", "text": fallback_response})
                 await save_history(chat_id, history)
@@ -518,6 +519,8 @@ async def chat_with_oline(
 
             if not bot_response:
                 bot_response = "hmm, aku lagi agak bingung nih. coba lagi nanti ya 😅"
+
+            bot_response = clean_tool_calls(bot_response)
 
             # 9. Simpan pemakaian token ke KV
             try:

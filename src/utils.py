@@ -152,3 +152,56 @@ async def notify_process(
         import logging
         logging.getLogger(__name__).warning("notify_process error for chat_id %s: %s", chat_id, str(e))
 
+
+def clean_tool_calls(text: str) -> str:
+    """
+    Menghapus pola pemanggilan tool/function call yang bocor ke teks respons
+    (seperti '[toggle_feature: enable]', '[tool: argument]', '[check_ai_quota]', dll)
+    dan merapikan spasi/newline.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+
+    # 1. Hapus pola [tool_name: argument] atau [tool: arg=val]
+    cleaned = re.sub(r"\[[a-zA-Z0-9_]+\s*:\s*[^\]]*\]", "", text)
+
+    # 2. Hapus pola [tool_name(args)] atau [tool_name()]
+    cleaned = re.sub(r"\[[a-zA-Z0-9_]+\s*\([^\]]*\)\]", "", cleaned)
+
+    # 3. Hapus pola [tool_name] jika merujuk ke nama tool/fungsi yang dikenal atau snake_case tool call
+    known_tools = {
+        "toggle_feature", "check_ai_quota", "check_quota", "check_feature_health",
+        "get_movie_recommendation", "get_music_recommendation", "get_weather_forecast",
+        "save_journal_entry", "get_journal_recap", "send_voice_message", "search_internet",
+        "get_stock_price", "get_market_summary", "create_drive_folder", "list_drive_files",
+        "search_drive_files", "upload_to_drive", "download_from_drive", "get_nearby_places",
+        "search_places_by_city", "execute_code", "save_note_to_notion", "save_memory_to_notion",
+        "add_notion_property", "preview_with_codepen", "deploy_to_vercel", "list_vercel_deployments",
+        "delete_vercel_deployment", "search_and_send_image", "simpan_aktivitas_neo4j",
+        "cari_aktivitas_neo4j", "search_design_reference", "analyze_image", "identify_image_subject",
+        "read_vercel_logs", "read_github_file", "create_github_branch", "update_github_file",
+        "create_pull_request", "tool", "tools", "function", "action", "call", "tool_call",
+    }
+
+    def _replace_standalone_bracket(match: re.Match) -> str:
+        name = match.group(1).lower()
+        if name in known_tools or ("_" in name and not name.isupper()):
+            return ""
+        return match.group(0)
+
+    cleaned = re.sub(r"\[([a-zA-Z0-9_]+)\]", _replace_standalone_bracket, cleaned)
+
+    # 4. Merapikan baris dan spasi berlebih
+    lines = cleaned.splitlines()
+    cleaned_lines = []
+    for line in lines:
+        stripped = re.sub(r"[ \t]+", " ", line).strip()
+        cleaned_lines.append(stripped)
+
+    result_lines = []
+    for line in cleaned_lines:
+        if line or (result_lines and result_lines[-1]):
+            result_lines.append(line)
+
+    return "\n".join(result_lines).strip()
+

@@ -7,7 +7,7 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Optional
+from src.utils import clean_tool_calls
 
 logger = logging.getLogger(__name__)
 
@@ -166,4 +166,4 @@ async def chat_mistral(
         logger.warning("Failed to increment mistral usage: %s", str(kv_err))
 
     final_text = response_message.content or ""
-    return final_text.strip()
+    return clean_tool_calls(final_text)

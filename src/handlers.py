@@ -11,6 +11,7 @@ from typing import Any, Optional
 from telegram import Bot
 
 from src.gemini import chat_with_oline
+from src.utils import clean_tool_calls
 from src.kv import (
     clear_pending_task,
     clear_progress_message_id,
@@ -335,7 +336,10 @@ async def call_model_with_fallback(
                 contents.append({"role": "user", "parts": [{"text": user_message}]})
                 resp, _, _ = await _generate_content_with_fallback(system_prompt, gemini_tools, contents, timeout_seconds=8.0)
                 if hasattr(resp, "text") and resp.text and resp.text.strip():
-                    return resp.text.strip()
+                    res = resp.text.strip()
+                    res_clean = clean_tool_calls(res)
+                    if res_clean:
+                        return res_clean
         except Exception as e:
             logger.warning("Provider '%s' failed on fallback chain ('%s'): %s", provider, jalur, str(e))
             continue

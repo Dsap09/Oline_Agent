@@ -10,6 +10,8 @@ import logging
 import os
 from typing import Any, Optional
 
+from src.utils import clean_tool_calls
+
 logger = logging.getLogger(__name__)
 
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
@@ -115,7 +117,7 @@ async def chat_groq(
                         except Exception as kv_err:
                             logger.warning("Failed to increment groq usage: %s", str(kv_err))
 
-                        return content.strip()
+                        return clean_tool_calls(content)
 
                 raise ValueError("Groq returned empty response choices.")
 
@@ -227,7 +229,7 @@ async def chat_groq_with_tools(
                             await save_groq_usage(chat_id, total_tokens)
                         except Exception as kv_err:
                             logger.warning("Failed to save Groq token usage: %s", str(kv_err))
-                    return content.strip()
+                    return clean_tool_calls(content)
 
                 # Copy messages list for tool call roundtrip
                 messages_second = list(messages)
@@ -314,7 +316,7 @@ async def chat_groq_with_tools(
 
                 if final_response.choices and len(final_response.choices) > 0:
                     final_content = final_response.choices[0].message.content or ""
-                    return final_content.strip()
+                    return clean_tool_calls(final_content)
 
                 return ""
 

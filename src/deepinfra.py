@@ -10,6 +10,8 @@ import logging
 import os
 from typing import Any, Optional
 
+from src.utils import clean_tool_calls
+
 logger = logging.getLogger(__name__)
 
 DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/openai"
@@ -191,4 +193,4 @@ async def chat_deepinfra(
             model_name, total_tokens,
         )
 
-    return final_text.strip()
+    return clean_tool_calls(final_text)

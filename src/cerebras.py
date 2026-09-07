@@ -9,6 +9,8 @@ import logging
 import os
 from typing import Any, Optional
 
+from src.utils import clean_tool_calls
+
 logger = logging.getLogger(__name__)
 
 CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
@@ -166,4 +168,4 @@ async def chat_cerebras(
         logger.warning("Failed to increment cerebras usage: %s", str(kv_err))
 
     final_text = response_message.content or ""
-    return final_text.strip()
+    return clean_tool_calls(final_text)

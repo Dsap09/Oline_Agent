@@ -12,6 +12,8 @@ from typing import Any, Optional
 
 import httpx
 
+from src.utils import clean_tool_calls
+
 logger = logging.getLogger(__name__)
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -294,7 +296,7 @@ async def chat_openrouter(
 
                 # 1. Jika tidak ada tool calls, kembalikan teks jawaban langsung
                 if not tool_calls:
-                    content = msg_obj.get("content", "") or ""
+                    content = clean_tool_calls(msg_obj.get("content", "") or "")
                     if content.strip():
                         await record_openrouter_usage(chat_id, model, 1, tokens=tokens_count)
                         # Jika berhasil, hapus dari _LIMITED_MODELS jika sebelumnya ada
@@ -340,7 +342,7 @@ async def chat_openrouter(
 
                     followup_choices = followup_json.get("choices", [])
                     if followup_choices:
-                        final_text = followup_choices[0].get("message", {}).get("content", "") or ""
+                        final_text = clean_tool_calls(followup_choices[0].get("message", {}).get("content", "") or "")
                         if final_text.strip():
                             await record_openrouter_usage(chat_id, model, 1, tokens=tokens_count)
                             _LIMITED_MODELS.discard(model)
