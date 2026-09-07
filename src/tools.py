@@ -737,6 +737,33 @@ TOOL_DECLARATIONS = [
             "required": ["branch", "title", "body"],
         },
     },
+    {
+        "name": "check_feature_health",
+        "description": "Memeriksa kesehatan semua fitur Oline.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "toggle_feature",
+        "description": "Mengaktifkan atau menonaktifkan fitur Oline.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "feature": {
+                    "type": "string",
+                    "description": "Nama fitur yang ingin diubah (misal: 'saham', 'cuaca', 'vision', 'notion', 'drive', 'deploy', 'landing_page', 'search').",
+                },
+                "status": {
+                    "type": "boolean",
+                    "description": "True untuk mengaktifkan, False untuk menonaktifkan.",
+                },
+            },
+            "required": ["feature", "status"],
+        },
+    },
 ]
 
 TOOLS_BY_INTENT = {
@@ -745,6 +772,8 @@ TOOLS_BY_INTENT = {
     "suara": ["send_voice_message"],
     "jurnal": ["save_journal_entry", "get_journal_recap"],
     "kuota": ["check_ai_quota", "check_quota"],
+    "health": ["check_feature_health"],
+    "kelola_fitur": ["toggle_feature", "check_feature_health"],
     "search": ["search_internet", "read_vercel_logs"],
     "saham": ["get_stock_price", "get_market_summary"],
     "drive": [
@@ -2751,6 +2780,51 @@ async def identify_image_subject(
     return f"Dari gambar ini, kemungkinan besar adalah {candidates_str}. ({deskripsi})"
 
 
+async def execute_check_feature_health() -> str:
+    """
+    Memeriksa kesehatan semua fitur Oline (brief.md).
+    Returns formatted string dengan status kesehatan fitur.
+    """
+    from src.health_check import check_all_features
+    from src.kv import get_failure_count, is_feature_enabled
+
+    results = await check_all_features()
+    lines = ["🩺 Status Kesehatan Fitur:\n"]
+
+    for feature, ok in results.items():
+        enabled = await is_feature_enabled(feature)
+        fail_count = await get_failure_count(feature)
+
+        if ok and enabled:
+            lines.append(f"✅ {feature}")
+        elif not ok and fail_count >= 3:
+            lines.append(f"❌ {feature} (gagal {fail_count}x, dinonaktifkan sementara)")
+        elif not ok:
+            lines.append(f"❌ {feature} (gagal {fail_count}x)")
+        elif not enabled:
+            lines.append(f"❌ {feature} (dinonaktifkan)")
+        else:
+            lines.append(f"✅ {feature}")
+
+    return "\n".join(lines)
+
+
+async def execute_toggle_feature(feature: str, status: bool) -> str:
+    """
+    Mengaktifkan atau menonaktifkan fitur Oline di Vercel KV (brief.md).
+    """
+    from src.config import FITUR_LIST
+    from src.kv import set_feature_status
+
+    clean_feat = (feature or "").strip().lower()
+    if clean_feat not in FITUR_LIST:
+        return f"Fitur '{feature}' tidak dikenal. Fitur yang tersedia: {', '.join(FITUR_LIST)}"
+
+    await set_feature_status(clean_feat, status)
+    state = "diaktifkan" if status else "dinonaktifkan"
+    return f"Fitur '{clean_feat}' berhasil {state}."
+
+
 # Map nama tool ke executor function
 TOOL_EXECUTORS = {
     "get_movie_recommendation": get_movie_recommendation,
@@ -2758,8 +2832,10 @@ TOOL_EXECUTORS = {
     "get_weather_forecast": get_weather_forecast,
     "save_journal_entry": execute_save_journal,
     "get_journal_recap": execute_get_journal_recap,
-    "check_quota": check_ai_quota,
     "check_ai_quota": check_ai_quota,
+    "check_quota": check_ai_quota,
+    "check_feature_health": execute_check_feature_health,
+    "toggle_feature": execute_toggle_feature,
     "send_voice_message": execute_send_voice_message,
     "search_internet": search_internet,
     "get_stock_price": get_stock_price,
@@ -2868,6 +2944,13 @@ async def execute_tool(
             )
     elif func_name in ("check_quota", "check_ai_quota"):
         return await check_ai_quota(chat_id=chat_id)
+    elif func_name == "check_feature_health":
+        return await execute_check_feature_health()
+    elif func_name == "toggle_feature":
+        return await execute_toggle_feature(
+            feature=args.get("feature", ""),
+            status=bool(args.get("status", True)),
+        )
     elif func_name == "send_voice_message":
         return await executor(chat_id=chat_id, text=args.get("text", ""))
     elif func_name == "get_nearby_places":

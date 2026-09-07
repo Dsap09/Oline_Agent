@@ -31,6 +31,8 @@ ERROR_DIAGNOSIS_PREFIX = "last_error_diagnosis"
 ERROR_SIGNATURE_PREFIX = "last_error_signature"
 CHECKPOINT_PREFIX = "task_checkpoint"
 AI_USAGE_PREFIX = "ai_usage"
+FEATURE_FLAGS_KEY = "feature_flags"
+FAILURE_COUNT_PREFIX = "failure_count"
 
 
 
@@ -809,4 +811,103 @@ async def get_all_ai_usage() -> dict[str, dict[str, int]]:
             result[provider] = {"request": 0, "token": 0}
 
     return result
+
+
+# --- Feature Flag & Failure Tracking (brief.md) ---
+
+DEFAULT_FEATURE_FLAGS = {
+    "landing_page": True,
+    "vision": True,
+    "notion": True,
+    "drive": True,
+    "neo4j": True,
+    "calendar": True,
+    "search": True,
+    "deploy": True,
+}
+
+
+async def get_all_feature_flags() -> dict[str, bool]:
+    """Mengambil dict status semua feature flags dari Vercel KV."""
+    res = await _kv_request(["GET", FEATURE_FLAGS_KEY])
+    flags = dict(DEFAULT_FEATURE_FLAGS)
+    if res and res.get("result"):
+        try:
+            data = res["result"]
+            if isinstance(data, str):
+                parsed = json.loads(data)
+            elif isinstance(data, dict):
+                parsed = data
+            else:
+                parsed = {}
+            if isinstance(parsed, dict):
+                flags.update(parsed)
+        except Exception as e:
+            logger.warning("Error parsing feature_flags from KV: %s", str(e))
+    return flags
+
+
+async def get_feature_status(feature: str) -> bool:
+    """Mengambil status aktif/nonaktif fitur tertentu dari Vercel KV."""
+    flags = await get_all_feature_flags()
+    return flags.get(feature, False)
+
+
+async def set_feature_status(feature: str, status: bool) -> bool:
+    """Menyimpan status aktif/nonaktif fitur tertentu ke Vercel KV."""
+    flags = await get_all_feature_flags()
+    flags[feature] = status
+    payload = json.dumps(flags, ensure_ascii=False)
+    res = await _kv_request(["SET", FEATURE_FLAGS_KEY, payload])
+    return res is not None
+
+
+async def is_feature_enabled(feature: str) -> bool:
+    """Memeriksa apakah fitur diizinkan/aktif."""
+    status = await get_feature_status(feature)
+    return status is True
+
+
+async def increment_failure_count(feature: str) -> int:
+    """Increment jumlah kegagalan fitur berturut-turut di KV. TTL 24 jam (86400s)."""
+    key = f"{FAILURE_COUNT_PREFIX}:{feature}"
+    res = await _kv_request(["INCR", key])
+    if res and res.get("result") is not None:
+        try:
+            count = int(res["result"])
+            await _kv_request(["EXPIRE", key, "86400"])
+            return count
+        except (ValueError, TypeError):
+            pass
+    return 1
+
+
+async def get_failure_count(feature: str) -> int:
+    """Mengambil jumlah kegagalan fitur tersimpan dari KV."""
+    key = f"{FAILURE_COUNT_PREFIX}:{feature}"
+    res = await _kv_request(["GET", key])
+    if res and res.get("result"):
+        try:
+            return int(res["result"])
+        except (ValueError, TypeError):
+            return 0
+    return 0
+
+
+async def reset_failure_count(feature: str) -> bool:
+    """Mereset jumlah kegagalan fitur dari KV ketika health check berhasil."""
+    key = f"{FAILURE_COUNT_PREFIX}:{feature}"
+    res = await _kv_request(["DEL", key])
+    return res is not None
+
+
+async def toggle_feature(feature: str, status: bool) -> bool:
+    """Mengubah status aktif/nonaktif fitur di Vercel KV (brief.md)."""
+    return await set_feature_status(feature, status)
+
+
+async def is_feature_active(feature: str) -> bool:
+    """Memeriksa apakah fitur aktif di Vercel KV (default True jika belum di-set)."""
+    flags = await get_all_feature_flags()
+    return flags.get(feature, True)
 

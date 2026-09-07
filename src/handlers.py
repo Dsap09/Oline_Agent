@@ -253,11 +253,12 @@ async def process_pending_task(target_chat_id: Optional[int] = None) -> dict[str
             await clear_pending_task(chat_id)
             await clear_progress_message_id(chat_id)
 
-            results.append({
-                "chat_id": chat_id,
-                "status": "error",
-                "error": err_msg,
-            })
+            # Jalankan health check otomatis setelah slow path selesai (brief.md)
+            try:
+                from src.health_check import run_monitoring_and_notify
+                asyncio.create_task(run_monitoring_and_notify(chat_id))
+            except Exception as hc_err:
+                logger.warning("Failed to trigger health monitoring: %s", str(hc_err))
 
     return {
         "status": "ok",

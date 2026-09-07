@@ -40,3 +40,18 @@ PROVIDER_LIMITS = {
         "label": "Cerebras (Cadangan)",
     },
 }
+
+FITUR_LIST = [
+    "chat",
+    "saham",
+    "cuaca",
+    "vision",
+    "landing_page",
+    "preview",
+    "deploy",
+    "notion",
+    "drive",
+    "neo4j",
+    "search",
+    "calendar",
+]

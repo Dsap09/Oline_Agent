@@ -174,6 +174,12 @@ HEAVY_KEYWORDS = {
     "suara": ["suara", "nyanyi", "gombal", "puisi", "voice note", "vn"],
     "jurnal": ["jurnal", "catat", "rekap jurnal"],
     "kuota": ["kuota", "token", "quota", "cek kuota ai", "kuota ai", "pemakaian ai", "status ai", "cek ai quota", "sisa kuota", "sisa token"],
+    "health": ["cek kesehatan", "cek fitur", "health check", "fitur rusak", "kesehatan fitur"],
+    "kelola_fitur": [
+        "aktifkan fitur", "nonaktifkan fitur", "matikan fitur", "hidupkan fitur",
+        "disable fitur", "enable fitur", "fitur nonaktif", "fitur aktif",
+        "toggle fitur", "kelola fitur", "fitur apa saja",
+    ],
     "drive": [
         "drive", "database", "folder", "simpan file", "buat folder",
         "cari file", "tampilkan isi", "kirim file", "upload", "download", "file",
@@ -463,6 +469,32 @@ async def handle_message(
     # Deteksi intent untuk menentukan Fast Path / Slow Path (dengan dukungan konteks percakapan)
     intent = await detect_intent_async(user_message, chat_id)
 
+    # --- Feature Flag Check Sebelum Dipakai (brief.md) ---
+    if intent is not None and intent not in ("health", "kelola_fitur"):
+        intent_to_feature = {
+            "saham": "saham",
+            "cuaca": "cuaca",
+            "gambar": "vision",
+            "vision": "vision",
+            "preview": "landing_page",
+            "deploy": "deploy",
+            "notion": "notion",
+            "drive": "drive",
+            "calendar": "calendar",
+            "search": "search",
+            "suara": "suara",
+            "jurnal": "jurnal",
+            "neo4j": "neo4j",
+            "coding": "coding",
+        }
+        feat_name = intent_to_feature.get(intent, intent)
+        from src.kv import is_feature_active
+        if not await is_feature_active(feat_name):
+            await update.effective_chat.send_message(
+                f"Fitur {feat_name} sedang dinonaktifkan. Mau diaktifkan lagi?"
+            )
+            return
+
     # --- Async Landing Page Path (Anti Gantung & Notifikasi Progres Satu Pesan) ---
     if is_landing_page_generation_request(user_message, intent):
         from src.handlers import process_pending_task
@@ -501,13 +533,19 @@ async def handle_message(
         intent=intent,
     )
 
-    # Otomatis panggil self_monitor untuk slow path (fitur berat) per brief.md
+    # Otomatis panggil self_monitor & health monitoring untuk slow path (fitur berat) per brief.md
     if intent is not None:
         try:
             from src.self_monitor import self_monitor
             asyncio.create_task(self_monitor(chat_id))
         except Exception as sm_err:
             logger.warning("Failed to trigger self_monitor: %s", str(sm_err))
+
+        try:
+            from src.health_check import run_monitoring_and_notify
+            asyncio.create_task(run_monitoring_and_notify(chat_id))
+        except Exception as hc_err:
+            logger.warning("Failed to trigger health monitoring: %s", str(hc_err))
 
     # Kirim respons (split jika terlalu panjang)
     if len(response) > 4096:
