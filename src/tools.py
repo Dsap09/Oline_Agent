@@ -52,11 +52,48 @@ MOONDREAM_SPACE_1 = os.environ.get("MOONDREAM_SPACE_1", "merve/moondream3")
 MOONDREAM_SPACE_2 = os.environ.get("MOONDREAM_SPACE_2", "vikhyatk/moondream2")
 
 
-# ============================================================
-# Gemini Function/Tool Declarations (untuk dikirim ke Gemini API)
-# ============================================================
+panggil_erine_tool = {
+    "name": "panggil_erine",
+    "description": (
+        "Memanggil fitur akademik ERINE AI (cari jurnal, sitasi APA/BibTeX, rangkum docx, tanya PDF). "
+        "Gunakan saat pengguna meminta pencarian karya ilmiah, format sitasi, merangkum file docx, atau bertanya tentang PDF."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "jenis": {
+                "type": "string",
+                "enum": ["cari_jurnal", "sitasi", "rangkum", "rangkum_docx", "tanya_pdf"],
+                "description": "Jenis permintaan akademik (cari_jurnal, sitasi, rangkum_docx, tanya_pdf).",
+            },
+            "data": {
+                "type": "string",
+                "description": "Data utama, misal query pencarian jurnal, judul karya ilmiah, atau teks dokumen.",
+            },
+            "file_url": {
+                "type": "string",
+                "description": "URL berkas publik (.docx atau .pdf) jika ada.",
+            },
+            "pertanyaan": {
+                "type": "string",
+                "description": "Pertanyaan spesifik untuk dokumen PDF (untuk jenis 'tanya_pdf').",
+            },
+            "penulis": {
+                "type": "string",
+                "description": "Nama penulis karya ilmiah (untuk jenis 'sitasi').",
+            },
+            "tahun": {
+                "type": "string",
+                "description": "Tahun terbit karya ilmiah (untuk jenis 'sitasi').",
+            },
+        },
+        "required": ["jenis", "data"],
+    },
+}
 
 TOOL_DECLARATIONS = [
+    panggil_erine_tool,
+
     {
         "name": "get_movie_recommendation",
         "description": (
@@ -766,44 +803,6 @@ TOOL_DECLARATIONS = [
             "required": ["feature", "status"],
         },
     },
-    {
-        "name": "panggil_erine",
-        "description": (
-            "Memanggil fitur akademik ERINE AI (cari jurnal, sitasi APA/BibTeX, rangkum docx, tanya PDF). "
-            "Gunakan saat pengguna meminta pencarian karya ilmiah, format sitasi, merangkum file docx, atau bertanya tentang PDF."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "jenis": {
-                    "type": "string",
-                    "enum": ["cari_jurnal", "sitasi", "rangkum_docx", "tanya_pdf"],
-                    "description": "Jenis permintaan akademik (cari_jurnal, sitasi, rangkum_docx, tanya_pdf).",
-                },
-                "data": {
-                    "type": "string",
-                    "description": "Data utama, misal query pencarian jurnal, judul karya ilmiah, atau teks dokumen.",
-                },
-                "file_url": {
-                    "type": "string",
-                    "description": "URL berkas publik (.docx atau .pdf) jika ada.",
-                },
-                "pertanyaan": {
-                    "type": "string",
-                    "description": "Pertanyaan spesifik untuk dokumen PDF (untuk jenis 'tanya_pdf').",
-                },
-                "penulis": {
-                    "type": "string",
-                    "description": "Nama penulis karya ilmiah (untuk jenis 'sitasi').",
-                },
-                "tahun": {
-                    "type": "string",
-                    "description": "Tahun terbit karya ilmiah (untuk jenis 'sitasi').",
-                },
-            },
-            "required": ["jenis"],
-        },
-    },
 ]
 
 
@@ -843,7 +842,7 @@ TOOLS_BY_INTENT = {
         "update_github_file",
         "create_pull_request",
     ],
-    "akademik": ["panggil_erine"],
+    "akademik": [panggil_erine_tool],
 }
 
 
@@ -857,11 +856,20 @@ def get_tools_for_intent(intent: Optional[str]) -> list[dict]:
     if not intent:
         return []
 
-    allowed_names = set(TOOLS_BY_INTENT.get(intent, []))
-    if not allowed_names:
+    allowed = TOOLS_BY_INTENT.get(intent, [])
+    if not allowed:
         return []
 
-    return [decl for decl in TOOL_DECLARATIONS if decl["name"] in allowed_names]
+    results = []
+    for item in allowed:
+        if isinstance(item, dict):
+            results.append(item)
+        elif isinstance(item, str):
+            for decl in TOOL_DECLARATIONS:
+                if isinstance(decl, dict) and decl.get("name") == item:
+                    results.append(decl)
+    return results
+
 
 
 # ============================================================

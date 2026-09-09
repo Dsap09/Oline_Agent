@@ -27,6 +27,8 @@ class TestErineAPIIntegration(unittest.TestCase):
     def test_detect_akademik_intent(self):
         """Memastikan kata kunci akademik terdeteksi sebagai intent 'akademik'."""
         queries = [
+            "jurnal",
+            "cari jurnal",
             "carikan jurnal tentang AI agent",
             "buatkan sitasi APA 7 untuk paper ini",
             "rangkum docx laporan ini",
@@ -38,18 +40,23 @@ class TestErineAPIIntegration(unittest.TestCase):
             intent = detect_intent(query)
             self.assertEqual(intent, "akademik", f"Query '{query}' gagal terdeteksi sebagai intent 'akademik'")
 
+    def test_fast_path_no_tools(self):
+        """Memastikan Fast Path (intent None) mengembalikan list tools kosong."""
+        tools_fast_path = get_tools_for_intent(None)
+        self.assertEqual(tools_fast_path, [])
+
     def test_panggil_erine_tool_declaration(self):
-        """Memastikan panggil_erine terdaftar di TOOL_DECLARATIONS dan TOOLS_BY_INTENT."""
-        decl = [t for t in TOOL_DECLARATIONS if t["name"] == "panggil_erine"]
+        """Memastikan panggil_erine terdaftar di TOOL_DECLARATIONS dan TOOLS_BY_INTENT['akademik']."""
+        decl = [t for t in TOOL_DECLARATIONS if isinstance(t, dict) and t.get("name") == "panggil_erine"]
         self.assertEqual(len(decl), 1)
         self.assertIn("jenis", decl[0]["parameters"]["properties"])
 
         self.assertIn("akademik", TOOLS_BY_INTENT)
-        self.assertIn("panggil_erine", TOOLS_BY_INTENT["akademik"])
 
         tools_for_intent = get_tools_for_intent("akademik")
         self.assertEqual(len(tools_for_intent), 1)
         self.assertEqual(tools_for_intent[0]["name"], "panggil_erine")
+
 
     @patch("httpx.AsyncClient.post")
     def test_panggil_erine_cari_jurnal_success(self, mock_post):
