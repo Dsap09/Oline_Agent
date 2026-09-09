@@ -2,6 +2,11 @@
 Konfigurasi limit dan parameter provider AI untuk Oline bot.
 """
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 PROVIDER_LIMITS = {
     "openrouter": {
         "type": "request",

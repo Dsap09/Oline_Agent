@@ -2901,10 +2901,14 @@ async def panggil_erine(
     penulis: Optional[str] = None,
     tahun: Optional[str] = None,
     chat_id: int = 0,
-) -> str | dict[str, Any]:
+    **kwargs: Any,
+) -> str:
     """
     Memanggil API akademik ERINE AI v1 (/api/v1/...) dengan timeout 20 detik (brief.md).
     """
+    from dotenv import load_dotenv
+    load_dotenv()
+
     erine_url = os.environ.get("ERINE_API_URL", "http://localhost:8000").rstrip("/")
     erine_key = os.environ.get("ERINE_API_KEY", "erine-secret-api-key-2026")
 
@@ -2913,40 +2917,44 @@ async def panggil_erine(
         "Content-Type": "application/json",
     }
 
+    main_data = data or kwargs.get("query") or kwargs.get("teks") or kwargs.get("judul") or ""
+    target_file_url = file_url or kwargs.get("url") or kwargs.get("link")
+    target_pertanyaan = pertanyaan or kwargs.get("question") or main_data
+
     jenis_clean = (jenis or "").strip().lower()
     if jenis_clean in ("jurnal", "cari_jurnal"):
         endpoint = "/api/v1/cari_jurnal"
-        payload = {"query": data}
+        payload = {"query": main_data}
     elif jenis_clean == "sitasi":
         endpoint = "/api/v1/sitasi"
         payload = {
-            "judul": data,
-            "penulis": penulis or "",
-            "tahun": tahun or "",
+            "judul": main_data,
+            "penulis": penulis or kwargs.get("author", ""),
+            "tahun": tahun or kwargs.get("year", ""),
         }
     elif jenis_clean in ("rangkum", "rangkum_docx"):
         endpoint = "/api/v1/rangkum_docx"
-        if file_url:
-            payload = {"file_url": file_url}
+        if target_file_url:
+            payload = {"file_url": target_file_url}
         else:
-            payload = {"teks": data}
+            payload = {"teks": main_data}
     elif jenis_clean in ("tanya_pdf", "pdf"):
         endpoint = "/api/v1/tanya_pdf"
-        target_url = file_url or data
-        target_q = pertanyaan or data
         payload = {
-            "file_url": target_url,
-            "pertanyaan": target_q,
+            "file_url": target_file_url or main_data,
+            "pertanyaan": target_pertanyaan,
         }
     else:
         endpoint = f"/api/v1/{jenis_clean}"
-        payload = {"query": data}
+        payload = {"query": main_data}
 
     url = f"{erine_url}{endpoint}"
+    logger.info("Memanggil ERINE API: POST %s dengan payload: %s", url, payload)
 
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(url, json=payload, headers=headers)
+            logger.info("Respons ERINE API status %s: %s", resp.status_code, resp.text[:200])
             if resp.status_code == 200:
                 body = resp.json()
                 if body.get("status") == "ok":
@@ -2954,18 +2962,18 @@ async def panggil_erine(
                     if isinstance(res_data, (dict, list)):
                         return json.dumps(res_data, ensure_ascii=False)
                     return str(res_data)
-                return body.get("message", "Layanan ERINE tidak dapat memproses permintaan.")
+                return body.get("message", "ERINE tidak dapat memproses permintaan.")
             elif resp.status_code == 401:
                 return "Akses ke ERINE ditolak (API Key tidak valid)."
             elif resp.status_code == 429:
                 return "Layanan ERINE sedang sibuk karena batas pemanggilan terlampaui. Coba lagi sebentar ya."
-            return f"ERINE sedang tidak dapat diakses (Status Code: {resp.status_code})."
+            return f"ERINE sedang tidak bisa diakses. Status {resp.status_code}"
     except httpx.TimeoutException:
         logger.warning("Timeout 20s contacting ERINE API at %s", url)
         return "Layanan akademik ERINE sedang lambat merespons (Timeout 20 detik). Mohon coba beberapa saat lagi."
     except Exception as e:
         logger.error("Gagal menghubungi ERINE API: %s", str(e))
-        return "Gagal menghubungi layanan akademik ERINE. Mohon pastikan layanan sedang aktif."
+        return f"Gagal menghubungi ERINE: {e}"
 
 
 # Map nama tool ke executor function
@@ -3014,6 +3022,8 @@ TOOL_EXECUTORS = {
 }
 
 TOOL_HANDLERS = TOOL_EXECUTORS
+TOOL_HANDLERS["panggil_erine"] = panggil_erine
+
 
 
 def convert_tools_to_openai_format(tool_declarations: list[dict]) -> list[dict]:
