@@ -172,7 +172,7 @@ HEAVY_KEYWORDS = {
     "cuaca": ["cuaca", "hujan", "panas", "suhu", "cerah"],
     "rekomendasi": ["rekomendasi", "film", "lagu", "seri", "anime"],
     "suara": ["suara", "nyanyi", "gombal", "puisi", "voice note", "vn"],
-    "jurnal": ["jurnal", "catat", "rekap jurnal"],
+    "jurnal": ["catat jurnal", "rekap jurnal", "jurnal harian"],
     "kuota": ["kuota", "token", "quota", "cek kuota ai", "kuota ai", "pemakaian ai", "status ai", "cek ai quota", "sisa kuota", "sisa token"],
     "health": ["cek kesehatan", "cek fitur", "health check", "fitur rusak", "kesehatan fitur"],
     "kelola_fitur": [
@@ -221,6 +221,12 @@ HEAVY_KEYWORDS = {
         "aktivitas", "simpan aktivitas", "catat aktivitas",
         "riwayat aktivitas", "tampilkan aktivitas", "log aktivitas",
         "forensik", "neo4j", "graph",
+    ],
+    "akademik": [
+        "jurnal", "skripsi", "sitasi", "bibtex", "referensi",
+        "rangkum docx", "tanya pdf", "paper", "penelitian", "literatur",
+        "karya ilmiah", "arxiv", "scholar", "apa 7", "rangkum dokumen",
+        "erine", "jurnal ilmiah",
     ],
 }
 
@@ -486,6 +492,7 @@ async def handle_message(
             "jurnal": "jurnal",
             "neo4j": "neo4j",
             "coding": "coding",
+            "akademik": "akademik",
         }
         feat_name = intent_to_feature.get(intent, intent)
         from src.kv import is_feature_active

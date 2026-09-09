@@ -5,12 +5,14 @@ cuaca (OpenWeatherMap), dan jurnal harian (Vercel KV).
 """
 
 import asyncio
+import json
 import logging
 import math
 import os
 import re
 from datetime import datetime
 from typing import Any, Optional
+
 
 import httpx
 
@@ -764,7 +766,46 @@ TOOL_DECLARATIONS = [
             "required": ["feature", "status"],
         },
     },
+    {
+        "name": "panggil_erine",
+        "description": (
+            "Memanggil fitur akademik ERINE AI (cari jurnal, sitasi APA/BibTeX, rangkum docx, tanya PDF). "
+            "Gunakan saat pengguna meminta pencarian karya ilmiah, format sitasi, merangkum file docx, atau bertanya tentang PDF."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "jenis": {
+                    "type": "string",
+                    "enum": ["cari_jurnal", "sitasi", "rangkum_docx", "tanya_pdf"],
+                    "description": "Jenis permintaan akademik (cari_jurnal, sitasi, rangkum_docx, tanya_pdf).",
+                },
+                "data": {
+                    "type": "string",
+                    "description": "Data utama, misal query pencarian jurnal, judul karya ilmiah, atau teks dokumen.",
+                },
+                "file_url": {
+                    "type": "string",
+                    "description": "URL berkas publik (.docx atau .pdf) jika ada.",
+                },
+                "pertanyaan": {
+                    "type": "string",
+                    "description": "Pertanyaan spesifik untuk dokumen PDF (untuk jenis 'tanya_pdf').",
+                },
+                "penulis": {
+                    "type": "string",
+                    "description": "Nama penulis karya ilmiah (untuk jenis 'sitasi').",
+                },
+                "tahun": {
+                    "type": "string",
+                    "description": "Tahun terbit karya ilmiah (untuk jenis 'sitasi').",
+                },
+            },
+            "required": ["jenis"],
+        },
+    },
 ]
+
 
 TOOLS_BY_INTENT = {
     "cuaca": ["get_weather_forecast"],
@@ -802,6 +843,7 @@ TOOLS_BY_INTENT = {
         "update_github_file",
         "create_pull_request",
     ],
+    "akademik": ["panggil_erine"],
 }
 
 
@@ -2851,8 +2893,85 @@ async def execute_toggle_feature(feature: str, status: bool) -> str:
     return f"Fitur '{clean_feat}' berhasil {state}."
 
 
+async def panggil_erine(
+    jenis: str,
+    data: str = "",
+    file_url: Optional[str] = None,
+    pertanyaan: Optional[str] = None,
+    penulis: Optional[str] = None,
+    tahun: Optional[str] = None,
+    chat_id: int = 0,
+) -> str | dict[str, Any]:
+    """
+    Memanggil API akademik ERINE AI v1 (/api/v1/...) dengan timeout 20 detik (brief.md).
+    """
+    erine_url = os.environ.get("ERINE_API_URL", "http://localhost:8000").rstrip("/")
+    erine_key = os.environ.get("ERINE_API_KEY", "erine-secret-api-key-2026")
+
+    headers = {
+        "x-api-key": erine_key,
+        "Content-Type": "application/json",
+    }
+
+    jenis_clean = (jenis or "").strip().lower()
+    if jenis_clean in ("jurnal", "cari_jurnal"):
+        endpoint = "/api/v1/cari_jurnal"
+        payload = {"query": data}
+    elif jenis_clean == "sitasi":
+        endpoint = "/api/v1/sitasi"
+        payload = {
+            "judul": data,
+            "penulis": penulis or "",
+            "tahun": tahun or "",
+        }
+    elif jenis_clean in ("rangkum", "rangkum_docx"):
+        endpoint = "/api/v1/rangkum_docx"
+        if file_url:
+            payload = {"file_url": file_url}
+        else:
+            payload = {"teks": data}
+    elif jenis_clean in ("tanya_pdf", "pdf"):
+        endpoint = "/api/v1/tanya_pdf"
+        target_url = file_url or data
+        target_q = pertanyaan or data
+        payload = {
+            "file_url": target_url,
+            "pertanyaan": target_q,
+        }
+    else:
+        endpoint = f"/api/v1/{jenis_clean}"
+        payload = {"query": data}
+
+    url = f"{erine_url}{endpoint}"
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code == 200:
+                body = resp.json()
+                if body.get("status") == "ok":
+                    res_data = body.get("data", "Tidak ada hasil dari ERINE.")
+                    if isinstance(res_data, (dict, list)):
+                        return json.dumps(res_data, ensure_ascii=False)
+                    return str(res_data)
+                return body.get("message", "Layanan ERINE tidak dapat memproses permintaan.")
+            elif resp.status_code == 401:
+                return "Akses ke ERINE ditolak (API Key tidak valid)."
+            elif resp.status_code == 429:
+                return "Layanan ERINE sedang sibuk karena batas pemanggilan terlampaui. Coba lagi sebentar ya."
+            return f"ERINE sedang tidak dapat diakses (Status Code: {resp.status_code})."
+    except httpx.TimeoutException:
+        logger.warning("Timeout 20s contacting ERINE API at %s", url)
+        return "Layanan akademik ERINE sedang lambat merespons (Timeout 20 detik). Mohon coba beberapa saat lagi."
+    except Exception as e:
+        logger.error("Gagal menghubungi ERINE API: %s", str(e))
+        return "Gagal menghubungi layanan akademik ERINE. Mohon pastikan layanan sedang aktif."
+
+
 # Map nama tool ke executor function
 TOOL_EXECUTORS = {
+    "panggil_erine": panggil_erine,
+
     "get_movie_recommendation": get_movie_recommendation,
     "get_music_recommendation": get_music_recommendation,
     "get_weather_forecast": get_weather_forecast,
@@ -2947,6 +3066,7 @@ async def execute_tool(
                 "get_weather_forecast": ("typing", None),
                 "get_stock_price": ("typing", None),
                 "identify_image_subject": ("typing", "Menganalisis gambar... 🔍"),
+                "panggil_erine": ("typing", "Menghubungi ERINE AI untuk data akademik... 🎓"),
             }
             if func_name in tool_notifs:
                 act, msg = tool_notifs[func_name]

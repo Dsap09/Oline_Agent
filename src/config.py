@@ -54,4 +54,6 @@ FITUR_LIST = [
     "neo4j",
     "search",
     "calendar",
+    "akademik",
 ]
+
