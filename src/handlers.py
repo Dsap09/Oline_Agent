@@ -11,7 +11,7 @@ from typing import Any, Optional
 from telegram import Bot
 
 from src.gemini import chat_with_oline
-from src.utils import clean_tool_calls
+from src.utils import clean_tool_call_text, clean_tool_calls
 from src.kv import (
     clear_pending_task,
     clear_progress_message_id,
@@ -39,6 +39,7 @@ async def send_telegram_message(chat_id: int, text: str) -> bool:
 
     try:
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        text = clean_tool_call_text(text)
         if len(text) > 4096:
             for i in range(0, len(text), 4096):
                 await bot.send_message(chat_id=chat_id, text=text[i : i + 4096])

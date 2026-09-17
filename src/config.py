@@ -61,6 +61,7 @@ FITUR_LIST = [
     "calendar",
     "akademik",
     "cek_token",
+    "renew_token",
 ]
 
 # Registry token API Oline untuk tool check_token_status (Token Health Check).
@@ -126,6 +127,39 @@ TOKEN_REGISTRY = {
         "service": "ERINE",
         "test_url": "{ERINE_API_URL}/health",
         "headers": lambda key: {"x-api-key": key},
+    },
+}
+
+# Token yang bisa dirotasi/diperbarui runtime oleh Oline (OAuth refresh token).
+# Oline tidak bisa generate sendiri, tapi bisa "memasang" token baru yang dikirim user
+# dengan meng-update Environment Variable di Vercel via Vercel API (bukan git, bukan KV).
+# key = env var yang diupdate; service harus match dengan TOKEN_REGISTRY.
+RENEWABLE_TOKENS = {
+    "GOOGLE_DRIVE_REFRESH_TOKEN": {
+        "service": "Google Drive",
+        "guide": (
+            "Untuk memperbarui token Google Drive:\n"
+            "1. Buka https://developers.google.com/oauthplayground\n"
+            "2. Klik ikon gerigi (⚙️) → centang 'Use your own OAuth credentials'\n"
+            "3. Masukkan Client ID & Client Secret Oline\n"
+            "4. Pilih scope: https://www.googleapis.com/auth/drive.file\n"
+            "5. Klik Authorize → Exchange authorization code for tokens\n"
+            "6. Salin 'refresh_token', lalu kirim ke Oline:\n"
+            "   /set_token drive <refresh_token>"
+        ),
+    },
+    "GOOGLE_CALENDAR_REFRESH_TOKEN": {
+        "service": "Google Calendar",
+        "guide": (
+            "Untuk memperbarui token Google Calendar:\n"
+            "1. Buka https://developers.google.com/oauthplayground\n"
+            "2. Klik ikon gerigi (⚙️) → centang 'Use your own OAuth credentials'\n"
+            "3. Masukkan Client ID & Client Secret Oline\n"
+            "4. Pilih scope: https://www.googleapis.com/auth/calendar\n"
+            "5. Klik Authorize → Exchange authorization code for tokens\n"
+            "6. Salin 'refresh_token', lalu kirim ke Oline:\n"
+            "   /set_token calendar <refresh_token>"
+        ),
     },
 }
 

@@ -49,6 +49,7 @@ def create_application() -> Application:
     application.add_handler(CommandHandler("start", handle_start))
     application.add_handler(CommandHandler("help", handle_help))
     application.add_handler(CommandHandler("jurnal", handle_jurnal_command))
+    application.add_handler(CommandHandler("set_token", handle_set_token))
     application.add_handler(
         MessageHandler(filters.LOCATION, handle_location_message)
     )
@@ -100,6 +101,36 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.effective_chat.send_message(help_text, parse_mode="Markdown")
 
 
+async def handle_set_token(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    Handler untuk command /set_token <layanan> <token>.
+    Oline memasang token baru ke dirinya sendiri (update env Vercel + redeploy).
+    Format: /set_token drive <refresh_token>
+    """
+    if not update.effective_chat or not update.message:
+        return
+
+    text = (update.message.text or "").strip()
+    parts = text.split(None, 2)
+    if len(parts) < 3:
+        await update.effective_chat.send_message(
+            "Format: /set_token <layanan> <token>\nContoh: /set_token drive 1//abc123..."
+        )
+        return
+
+    service = parts[1]
+    new_token = parts[2].strip()
+    if not new_token:
+        await update.effective_chat.send_message("Token tidak boleh kosong.")
+        return
+
+    from src.tools import renew_token
+    response = await renew_token(service=service, new_token=new_token)
+    await update.effective_chat.send_message(response)
+
+
 async def handle_jurnal_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -118,7 +149,6 @@ async def handle_jurnal_command(
             "Mohon tunggu sebentar sebelum mengirim pesan kembali."
         )
         return
-
     # Ambil teks setelah /jurnal
     text = ""
     if update.message.text:
@@ -232,6 +262,11 @@ HEAVY_KEYWORDS = {
         "cek token", "status token", "token oline", "validasi token",
         "token valid", "cek kredensial", "cek api key", "cek semua token",
         "token kadaluwarsa", "token expired", "audit token",
+    ],
+    "renew_token": [
+        "perbarui token", "update token", "renew token", "ganti token",
+        "token baru", "refresh token", "rotasi token", "set token",
+        "perbarui kredensial", "ganti api key",
     ],
 }
 
@@ -625,6 +660,7 @@ async def handle_message(
             "coding": "coding",
             "akademik": "akademik",
             "cek_token": "cek_token",
+            "renew_token": "renew_token",
         }
         feat_name = intent_to_feature.get(intent, intent)
         from src.kv import is_feature_active
@@ -712,6 +748,8 @@ async def handle_message(
             logger.warning("Failed to trigger health monitoring: %s", str(hc_err))
 
     # Kirim respons (split jika terlalu panjang)
+    from src.utils import clean_tool_call_text
+    response = clean_tool_call_text(response)
     if len(response) > 4096:
         # Telegram max 4096 chars per pesan
         for i in range(0, len(response), 4096):

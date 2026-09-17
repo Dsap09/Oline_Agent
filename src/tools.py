@@ -113,9 +113,33 @@ check_token_status_tool = {
     },
 }
 
+renew_token_tool = {
+    "name": "renew_token",
+    "description": (
+        "Memperbarui token yang kedaluwarsa/kadaluwarsa. Untuk token OAuth (Google Drive, Google Calendar), "
+        "Oline memandu user membuat token baru lalu memasangnya ke Vercel Environment Variables tanpa redeploy manual. "
+        "Untuk API key statis, Oline menerima token baru dan memasangnya. Gunakan saat pengguna meminta memperbarui token/kredensial."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "service": {
+                "type": "string",
+                "description": "Layanan yang tokennya mau diperbarui (misal: Google Drive, Google Calendar, Vercel, Groq).",
+            },
+            "new_token": {
+                "type": "string",
+                "description": "Token baru yang dikirim user (opsional, kalau sudah ada).",
+            },
+        },
+        "required": ["service"],
+    },
+}
+
 TOOL_DECLARATIONS = [
     panggil_erine_tool,
     check_token_status_tool,
+    renew_token_tool,
 
     {
         "name": "get_movie_recommendation",
@@ -867,6 +891,7 @@ TOOLS_BY_INTENT = {
     ],
     "akademik": [panggil_erine_tool],
     "cek_token": [check_token_status_tool],
+    "renew_token": [renew_token_tool],
 }
 
 
@@ -3092,10 +3117,67 @@ async def check_token_status(service_filter: str = "") -> str:
     return result
 
 
+def resolve_token_service(service: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    Memetakan nama layanan (misal 'drive', 'google drive', 'vercel') ke env key & label layanan.
+    Returns (env_key, service_label) atau (None, None) jika tidak dikenal.
+    """
+    from src.config import TOKEN_REGISTRY
+
+    svc = (service or "").strip().lower()
+    if not svc:
+        return None, None
+
+    for env_key, info in TOKEN_REGISTRY.items():
+        if svc in info["service"].lower():
+            return env_key, info["service"]
+    return None, None
+
+
+async def renew_token(service: str = "", new_token: str = "") -> str:
+    """
+    Token Renewal Assistant (brief.md):
+    - Tanpa new_token: memberi panduan langkah-demi-langkah membuat token baru.
+    - Dengan new_token (token OAuth yang bisa dirotasi): Oline memasang token ke dirinya
+      sendiri dengan meng-update Environment Variable di Vercel lalu trigger redeploy
+      (tanpa menyimpan secret di KV dan tanpa commit ke git).
+    """
+    from src.config import RENEWABLE_TOKENS
+
+    env_key, service_label = resolve_token_service(service)
+    if not env_key:
+        if service.strip():
+            return f"Layanan '{service}' tidak dikenal. Contoh: /set_token drive <token>, /set_token vercel <token>"
+        return "Layanan belum diisi. Contoh: /set_token drive <token>"
+
+    renewable = env_key in RENEWABLE_TOKENS
+    guide = RENEWABLE_TOKENS[env_key]["guide"] if renewable else None
+
+    new_token = (new_token or "").strip()
+
+    if not new_token:
+        if guide:
+            return f"🔑 Memperbarui {service_label}\n\n{guide}"
+        return (
+            f"🔑 {service_label} adalah API key statis yang tidak bisa dirotasi otomatis.\n"
+            f"Buat token baru di dashboard provider-nya, lalu kirim ke Oline:\n"
+            f"/set_token {service.strip()} <token>"
+        )
+
+    # User sudah mengirim token baru -> pasang ke Vercel env + redeploy
+    from src.vercel_manage import update_token_and_redeploy
+    result = await update_token_and_redeploy(env_key, new_token)
+    if "error" in result:
+        return f"❌ Gagal memperbarui token {service_label}: {result['error']}"
+    msg = result.get("message", "")
+    return f"✅ Token {service_label} berhasil diperbarui dan langsung aktif.\n{msg}".strip()
+
+
 # Map nama tool ke executor function
 TOOL_EXECUTORS = {
     "panggil_erine": panggil_erine,
     "check_token_status": check_token_status,
+    "renew_token": renew_token,
 
     "get_movie_recommendation": get_movie_recommendation,
     "get_music_recommendation": get_music_recommendation,

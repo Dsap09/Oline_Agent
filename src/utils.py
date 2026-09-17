@@ -153,6 +153,34 @@ async def notify_process(
         logging.getLogger(__name__).warning("notify_process error for chat_id %s: %s", chat_id, str(e))
 
 
+def clean_tool_call_text(text: str) -> str:
+    """
+    Menghapus blok pemanggilan tool bergaya OpenAI/agents yang bocor ke teks respons,
+    misalnya <tool_call>...</tool_call>, <function_call>...</function_call>,
+    <tool>...</tool>, <invoke name="...">...</invoke>, <call>...</call>, <tool_calls>...</tool_calls>.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+
+    for tag in [
+        "tool_call", "function_call", "function_calls", "tool_calls",
+        "tool", "invoke", "call", "use_mcp_tool", "component",
+    ]:
+        # Hapus seluruh blok berpasangan (termasuk isinya)
+        pattern = re.compile(
+            rf"<\s*{tag}\b[^>]*>.*?<\s*/\s*{tag}\s*>",
+            re.DOTALL | re.IGNORECASE,
+        )
+        text = pattern.sub("", text)
+        # Hapus tag pembuka/penutup yang tersisa tanpa pasangan
+        text = re.sub(rf"<\s*/?\s*{tag}\b[^>]*>", "", text, flags=re.IGNORECASE)
+
+    # Rapikan spasi & baris berlebih
+    text = re.sub(r"[ \t]+", " ", text).strip()
+    lines = [line.strip() for line in text.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
+
+
 def clean_tool_calls(text: str) -> str:
     """
     Menghapus pola pemanggilan tool/function call yang bocor ke teks respons
@@ -161,6 +189,9 @@ def clean_tool_calls(text: str) -> str:
     """
     if not text or not isinstance(text, str):
         return ""
+
+    # Hapus dulu blok <tool_call>...</tool_call> bergaya agents
+    text = clean_tool_call_text(text)
 
     # 1. Hapus pola [tool_name: argument] atau [tool: arg=val]
     cleaned = re.sub(r"\[[a-zA-Z0-9_]+\s*:\s*[^\]]*\]", "", text)
