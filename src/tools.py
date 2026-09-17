@@ -17,6 +17,8 @@ from typing import Any, Optional
 import httpx
 
 from src.kv import (
+    del_cache,
+    get_cache,
     get_journal_entries,
     get_monthly_tts_usage,
     get_today_groq_usage,
@@ -25,6 +27,7 @@ from src.kv import (
     save_journal,
     save_tts_usage,
     save_user_location,
+    set_cache,
 )
 
 # NOTE: src.notion dan src.voice di-lazy-load di dalam fungsi masing-masing
@@ -91,8 +94,28 @@ panggil_erine_tool = {
     },
 }
 
+check_token_status_tool = {
+    "name": "check_token_status",
+    "description": (
+        "Memeriksa status semua token API yang terhubung dengan Oline "
+        "(Groq, Gemini, Mistral, OpenRouter, DeepInfra, Cerebras, Vercel, Notion, GitHub, Google Drive, Google Calendar, ERINE). "
+        "Gunakan saat pengguna meminta mengecek token, API key, kredensial, atau status validitas token."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "service_filter": {
+                "type": "string",
+                "description": "Filter layanan tertentu (misal: Groq, Gemini). Kosongkan untuk semua.",
+            }
+        },
+        "required": [],
+    },
+}
+
 TOOL_DECLARATIONS = [
     panggil_erine_tool,
+    check_token_status_tool,
 
     {
         "name": "get_movie_recommendation",
@@ -843,6 +866,7 @@ TOOLS_BY_INTENT = {
         "create_pull_request",
     ],
     "akademik": [panggil_erine_tool],
+    "cek_token": [check_token_status_tool],
 }
 
 
@@ -2984,9 +3008,94 @@ async def panggil_erine(
         return f"Gagal menghubungi ERINE: {e}"
 
 
+async def check_token_status(service_filter: str = "") -> str:
+    """
+    Memeriksa status semua token API yang terhubung dengan Oline (Token Health Check).
+    Menguji tiap token dengan request ringan ke API layanan terkait.
+    Hasil dicache di Vercel KV selama 5 menit agar tidak spam provider (brief.md).
+
+    Args:
+        service_filter: Filter nama layanan (misal "Groq", "Gemini"). Kosong = semua.
+
+    Returns:
+        String laporan status token yang rapi (tanpa menampilkan isi token).
+    """
+    from src.config import TOKEN_REGISTRY
+
+    cache_key = "token_status_cache"
+    filter_lower = (service_filter or "").strip().lower()
+
+    # Coba ambil dari cache dulu
+    cached = await get_cache(cache_key)
+    if cached:
+        if not filter_lower:
+            return cached
+        # Jika ada filter, tetap jalankan ulang agar hanya menampilkan layanan yang diminta
+
+    lines = ["🔑 Status Token Oline\n"]
+
+    for env_key, info in TOKEN_REGISTRY.items():
+        service = info["service"]
+
+        if filter_lower and filter_lower not in service.lower():
+            continue
+
+        token = os.environ.get(env_key, "")
+        if not token:
+            lines.append(f"⚠️ {service}: tidak dikonfigurasi")
+            continue
+
+        # Uji khusus OAuth (Google Drive / Calendar)
+        if info.get("test_url") == "oauth":
+            try:
+                if "Drive" in service:
+                    from src.drive import get_drive_service
+                    get_drive_service()
+                elif "Calendar" in service:
+                    from src.calendar_tools import get_calendar_service
+                    get_calendar_service()
+                lines.append(f"✅ {service}: valid")
+            except Exception:
+                lines.append(f"❌ {service}: token tidak valid")
+            continue
+
+        # Uji HTTP ringan
+        url = info["test_url"]
+        url = url.replace("{key}", token)
+        if "{ERINE_API_URL}" in url:
+            url = url.replace("{ERINE_API_URL}", os.environ.get("ERINE_API_URL", ""))
+
+        headers = info["headers"](token) if callable(info.get("headers")) else {}
+
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(url, headers=headers)
+            if resp.status_code in (200, 201):
+                lines.append(f"✅ {service}: valid")
+            elif resp.status_code in (401, 403):
+                lines.append(f"❌ {service}: unauthorized")
+            elif resp.status_code == 404:
+                lines.append(f"⚠️ {service}: endpoint tidak ditemukan")
+            else:
+                lines.append(f"⚠️ {service}: status {resp.status_code}")
+        except httpx.TimeoutException:
+            lines.append(f"⚠️ {service}: timeout")
+        except Exception as e:
+            lines.append(f"⚠️ {service}: error — {type(e).__name__}")
+
+    result = "\n".join(lines)
+
+    # Cache hasil 5 menit (hanya bila tanpa filter, karena filter bisa berbeda-beda)
+    if not filter_lower:
+        await set_cache(cache_key, result, ttl_seconds=300)
+
+    return result
+
+
 # Map nama tool ke executor function
 TOOL_EXECUTORS = {
     "panggil_erine": panggil_erine,
+    "check_token_status": check_token_status,
 
     "get_movie_recommendation": get_movie_recommendation,
     "get_music_recommendation": get_music_recommendation,

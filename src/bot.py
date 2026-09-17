@@ -228,6 +228,11 @@ HEAVY_KEYWORDS = {
         "karya ilmiah", "arxiv", "scholar", "apa 7", "rangkum dokumen",
         "erine", "jurnal ilmiah",
     ],
+    "cek_token": [
+        "cek token", "status token", "token oline", "validasi token",
+        "token valid", "cek kredensial", "cek api key", "cek semua token",
+        "token kadaluwarsa", "token expired", "audit token",
+    ],
 }
 
 
@@ -619,6 +624,7 @@ async def handle_message(
             "neo4j": "neo4j",
             "coding": "coding",
             "akademik": "akademik",
+            "cek_token": "cek_token",
         }
         feat_name = intent_to_feature.get(intent, intent)
         from src.kv import is_feature_active
