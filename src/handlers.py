@@ -146,62 +146,88 @@ async def process_pending_task(target_chat_id: Optional[int] = None) -> dict[str
             chat_id, msg_id, perintah[:60]
         )
 
-        # Inisialisasi atau ambil task checkpoint tersimpan per brief.md
-        checkpoint = await get_checkpoint(chat_id)
-        if not checkpoint:
-            checkpoint = {
-                "perintah_asli": perintah,
-                "style_guide": "Desain modern, responsif, kontras tinggi, typography berkarakter, tanpa placeholder abu-abu",
-                "langkah_selesai": [],
-                "langkah_sekarang": "generate_html",
-                "data": {},
-                "retry_count": 0,
-                "max_retry": 3,
-                "waktu_terakhir": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            await save_checkpoint(chat_id, checkpoint)
+        is_landing = intent in ("preview", "deploy", "design_reference")
+
+        # Inisialisasi atau ambil task checkpoint tersimpan per brief.md (khusus alur landing page)
+        checkpoint = None
+        if is_landing:
+            checkpoint = await get_checkpoint(chat_id)
+            if not checkpoint:
+                checkpoint = {
+                    "perintah_asli": perintah,
+                    "style_guide": "Desain modern, responsif, kontras tinggi, typography berkarakter, tanpa placeholder abu-abu",
+                    "langkah_selesai": [],
+                    "langkah_sekarang": "generate_html",
+                    "data": {},
+                    "retry_count": 0,
+                    "max_retry": 3,
+                    "waktu_terakhir": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                await save_checkpoint(chat_id, checkpoint)
 
         try:
-            # Langkah 1: Menyusun struktur HTML
-            if msg_id:
-                await update_progress(
-                    chat_id, msg_id,
-                    "⏳ [1/4] Menyusun struktur HTML... Sisa 25 detik."
+            if is_landing:
+                # Langkah 1: Menyusun struktur HTML
+                if msg_id:
+                    await update_progress(
+                        chat_id, msg_id,
+                        "⏳ [1/4] Menyusun struktur HTML... Sisa 25 detik."
+                    )
+
+                # Langkah 2: Membuat CSS & Tampilan
+                if msg_id:
+                    await update_progress(
+                        chat_id, msg_id,
+                        "⏳ [2/4] Membuat CSS & Tampilan Wabi-Sabi... Sisa 15 detik."
+                    )
+
+                # Langkah 3: Menyiapkan Preview & Link
+                if msg_id:
+                    await update_progress(
+                        chat_id, msg_id,
+                        "⏳ [3/4] Menambahkan efek Canvas & menyiapkan preview... Sisa 8 detik."
+                    )
+
+                # Gunakan context prompt jika checkpoint memiliki langkah selesai sebelumnya
+                effective_prompt = build_context_prompt(checkpoint) if checkpoint.get("langkah_selesai") else perintah
+
+                # Eksekusi pipeline generasi landing page via chat_with_oline
+                response_text = await chat_with_oline(
+                    chat_id=chat_id,
+                    user_message=effective_prompt,
+                    user_name=user_name,
+                    intent=intent,
+                    is_retry=True,
                 )
 
-            # Langkah 2: Membuat CSS & Tampilan
-            if msg_id:
-                await update_progress(
-                    chat_id, msg_id,
-                    "⏳ [2/4] Membuat CSS & Tampilan Wabi-Sabi... Sisa 15 detik."
+                # Update checkpoint setelah berhasil
+                if "preview" not in checkpoint.get("langkah_selesai", []):
+                    checkpoint["langkah_selesai"].append("generate_html")
+                    checkpoint["langkah_selesai"].append("generate_css")
+                    checkpoint["langkah_selesai"].append("preview")
+                    checkpoint["langkah_sekarang"] = "selesai"
+                    await save_checkpoint(chat_id, checkpoint)
+            else:
+                # --- Alur generik "Acknowledge First, Process Later" (brief.md) ---
+                # Menangani intent slow selain landing page (misal: akademik/ERINE).
+                if msg_id:
+                    await update_progress(
+                        chat_id, msg_id,
+                        "⏳ Sedang memproses permintaan kamu... Mohon tunggu sebentar ya."
+                    )
+                else:
+                    await send_telegram_message(
+                        chat_id,
+                        "⏳ Baik, permintaan kamu sedang diproses. Aku kabari setelah selesai ya."
+                    )
+
+                response_text = await chat_with_oline(
+                    chat_id=chat_id,
+                    user_message=perintah,
+                    user_name=user_name,
+                    intent=intent,
+                    is_retry=True,
                 )
-
-            # Langkah 3: Menyiapkan Preview & Link
-            if msg_id:
-                await update_progress(
-                    chat_id, msg_id,
-                    "⏳ [3/4] Menambahkan efek Canvas & menyiapkan preview... Sisa 8 detik."
-                )
-
-            # Gunakan context prompt jika checkpoint memiliki langkah selesai sebelumnya
-            effective_prompt = build_context_prompt(checkpoint) if checkpoint.get("langkah_selesai") else perintah
-
-            # Eksekusi pipeline generasi landing page via chat_with_oline
-            response_text = await chat_with_oline(
-                chat_id=chat_id,
-                user_message=effective_prompt,
-                user_name=user_name,
-                intent=intent,
-                is_retry=True,
-            )
-
-            # Update checkpoint setelah berhasil
-            if "preview" not in checkpoint.get("langkah_selesai", []):
-                checkpoint["langkah_selesai"].append("generate_html")
-                checkpoint["langkah_selesai"].append("generate_css")
-                checkpoint["langkah_selesai"].append("preview")
-                checkpoint["langkah_sekarang"] = "selesai"
-                await save_checkpoint(chat_id, checkpoint)
 
             # Edit pesan terakhir menjadi Selesai jika message_id tersedia
             success_edited = False
@@ -222,7 +248,8 @@ async def process_pending_task(target_chat_id: Optional[int] = None) -> dict[str
             # Bersihkan task, checkpoint & progress message_id setelah sukses penuh
             await clear_pending_task(chat_id)
             await clear_progress_message_id(chat_id)
-            await delete_checkpoint(chat_id)
+            if is_landing:
+                await delete_checkpoint(chat_id)
 
             processed_count += 1
             results.append({
@@ -234,15 +261,18 @@ async def process_pending_task(target_chat_id: Optional[int] = None) -> dict[str
         except Exception as e:
             err_msg = str(e)
             logger.error("Failed to process pending task for chat_id %s: %s", chat_id, err_msg)
-            
-            # Increment retry count pada checkpoint per brief.md
-            checkpoint["retry_count"] = checkpoint.get("retry_count", 0) + 1
-            if checkpoint["retry_count"] >= checkpoint.get("max_retry", 3):
-                await delete_checkpoint(chat_id)
-                fail_text = f"❌ Task ini gagal setelah beberapa percobaan. Penyebab: {err_msg[:100]}. Mau dilanjutkan lagi?"
+
+            # Increment retry count pada checkpoint per brief.md (khusus alur landing page)
+            if is_landing and checkpoint:
+                checkpoint["retry_count"] = checkpoint.get("retry_count", 0) + 1
+                if checkpoint["retry_count"] >= checkpoint.get("max_retry", 3):
+                    await delete_checkpoint(chat_id)
+                    fail_text = f"❌ Task ini gagal setelah beberapa percobaan. Penyebab: {err_msg[:100]}. Mau dilanjutkan lagi?"
+                else:
+                    await save_checkpoint(chat_id, checkpoint)
+                    fail_text = f"❌ Gagal di langkah {checkpoint.get('langkah_sekarang')}. Penyebab: {err_msg[:100]}. Mau coba lagi?"
             else:
-                await save_checkpoint(chat_id, checkpoint)
-                fail_text = f"❌ Gagal di langkah {checkpoint.get('langkah_sekarang')}. Penyebab: {err_msg[:100]}. Mau coba lagi?"
+                fail_text = f"❌ Gagal memproses task kamu. Penyebab: {err_msg[:100]}. Mau coba lagi?"
 
             if msg_id:
                 edited = await update_progress(chat_id, msg_id, fail_text)

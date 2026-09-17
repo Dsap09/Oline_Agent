@@ -33,6 +33,7 @@ CHECKPOINT_PREFIX = "task_checkpoint"
 AI_USAGE_PREFIX = "ai_usage"
 FEATURE_FLAGS_KEY = "feature_flags"
 FAILURE_COUNT_PREFIX = "failure_count"
+CLARIFY_PREFIX = "clarify"
 
 
 
@@ -472,6 +473,49 @@ async def del_cache(key: str) -> bool:
     """
     if not key:
         return False
+    result = await _kv_request(["DEL", key])
+    return result is not None
+
+
+# --- Klarifikasi (Ask-Before-Act) Functions ---
+
+async def save_clarify_state(chat_id: int, perintah_asli: str) -> bool:
+    """
+    Menyimpan state klarifikasi ambiguitas ke KV untuk user tertentu.
+    TTL 5 menit (300 detik) sesuai brief.md — hapus otomatis jika user tidak menjawab.
+    """
+    key = f"{CLARIFY_PREFIX}:{chat_id}"
+    payload = json.dumps({
+        "perintah_asli": perintah_asli,
+        "waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }, ensure_ascii=False)
+    result = await _kv_request(["SET", key, payload, "EX", "300"])
+    return result is not None
+
+
+async def get_clarify_state(chat_id: int) -> Optional[dict]:
+    """
+    Mengambil state klarifikasi dari KV. Returns dict jika ada, None jika tidak ada / expired.
+    """
+    key = f"{CLARIFY_PREFIX}:{chat_id}"
+    result = await _kv_request(["GET", key])
+    if result and result.get("result"):
+        try:
+            data = result["result"]
+            if isinstance(data, str):
+                data = json.loads(data)
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning("Error parsing clarify state from KV: %s", str(e))
+    return None
+
+
+async def clear_clarify_state(chat_id: int) -> bool:
+    """
+    Menghapus state klarifikasi dari KV setelah user menjawab / batal.
+    """
+    key = f"{CLARIFY_PREFIX}:{chat_id}"
     result = await _kv_request(["DEL", key])
     return result is not None
 

@@ -304,6 +304,34 @@ RETRY_KEYWORDS = [
     "jalankan", "coba", "pukul", "eksekusi",
 ]
 
+STATUS_KEYWORDS = [
+    "status task", "status tugas", "status pekerjaan", "status saya",
+    "kabar task", "kabar tugas", "progresnya", "progressnya",
+    "selesai belum", "jadi belum", "beres belum", "udah beres", "sudah beres",
+    "masih diproses", "masih jalan", "masih diproses gak", "prosesnya gimana",
+    "gimana status", "cek status", "cek task",
+]
+
+# --- Klarifikasi Ask-Before-Act (brief.md) ---
+AMBIGUOUS_KEYWORDS = ["cek", "lihat", "status", "kondisi", "info"]
+
+CLEAR_COMMANDS = [
+    "cek koneksi", "cek kesehatan", "cek kuota ai", "cek kuota",
+    "cek cuaca", "cek saham", "status task", "status tugas",
+    "cek semua fitur", "health check", "cek fitur", "cek status",
+    "kondisi fitur", "cek lokasi",
+]
+
+AMBIGUOUS_TARGETS = {
+    "notion": "Maksud kamu cek status koneksi Notion, atau lihat isi database Notion?\n(1) Status koneksi\n(2) Isi database",
+    "ai": "Mau cek status model AI, atau kuota pemakaian AI?\n(1) Status model\n(2) Kuota pemakaian",
+    "drive": "Mau cek status Google Drive, atau isi folder Drive?\n(1) Status koneksi\n(2) Isi folder",
+    "koneksi": "Mau cek status koneksi, atau ada hal lain yang perlu dicek?",
+    "kuota": "Mau cek kuota AI, atau status model AI?",
+}
+
+CONFIRM_KEYWORDS = ["ya", "iya", "betul", "benar", "1", "2", "status", "koneksi", "kuota", "isi", "model", "folder", "oke", "ok"]
+
 PERBAIKAN_KEYWORDS = ["perbaiki", "benerin", "fix", "solusi"]
 
 
@@ -329,6 +357,69 @@ def is_retry_request(text: str) -> bool:
         return False
     text_lower = text.lower().strip()
     return any(kw in text_lower for kw in RETRY_KEYWORDS)
+
+
+def is_status_request(text: str) -> bool:
+    """Mendeteksi apakah pesan pengguna menanyakan status pending task yang sedang berjalan."""
+    if not text:
+        return False
+    text_lower = text.lower().strip()
+    return any(kw in text_lower for kw in STATUS_KEYWORDS)
+
+
+def is_ambiguous(text: str) -> bool:
+    """
+    Mendeteksi apakah perintah pengguna ambigu (Ask-Before-Act).
+    Mengembalikan False jika perintah sudah jelas (CLEAR_COMMANDS) atau tidak mengandung kata ambigu.
+    """
+    if not text:
+        return False
+    text_lower = text.lower().strip()
+    if any(clear in text_lower for clear in CLEAR_COMMANDS):
+        return False
+    return any(kw in text_lower for kw in AMBIGUOUS_KEYWORDS)
+
+
+def get_clarify_question(text: str) -> str:
+    """Menyusun pertanyaan klarifikasi berdasarkan target fitur pada perintah ambigu."""
+    text_lower = text.lower().strip()
+    for target, question in AMBIGUOUS_TARGETS.items():
+        if target in text_lower:
+            return question
+    return "Maksud kamu apa ya? Bisa lebih spesifik?"
+
+
+def build_task_status_message(pending_task: dict) -> str:
+    """
+    Menyusun pesan status pending task dengan estimasi berdasarkan waktu berjalan.
+    """
+    import datetime as _dt
+
+    perintah = pending_task.get("perintah") or pending_task.get("message") or "task"
+    perintah_short = perintah if len(perintah) <= 60 else perintah[:60] + "..."
+
+    elapsed_minutes = None
+    raw_waktu = pending_task.get("waktu") or pending_task.get("timestamp")
+    if raw_waktu:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                start = _dt.datetime.strptime(str(raw_waktu)[:19], fmt)
+                elapsed_minutes = int((_dt.datetime.now() - start).total_seconds() // 60)
+                break
+            except ValueError:
+                continue
+
+    if elapsed_minutes is not None and elapsed_minutes > 5:
+        estimasi = "masih diproses ya. Sudah sekitar beberapa menit, kalau lama banget bisa bilang 'coba lagi' ya."
+    elif elapsed_minutes is not None and elapsed_minutes > 2:
+        estimasi = "masih diproses. Estimasi selesai 1-2 menit lagi."
+    else:
+        estimasi = "masih diproses. Estimasi selesai sekitar 1 menit lagi."
+
+    return (
+        f"⏳ Task \"{perintah_short}\" {estimasi}\n"
+        "Aku kabari begitu selesai ya!"
+    )
 
 
 def generate_memory_title(rule_text: str) -> str:
@@ -407,6 +498,20 @@ async def handle_message(
     if not user_message:
         return
 
+    # --- Klarifikasi Ask-Before-Act: tangani jawaban user atas pertanyaan klarifikasi (brief.md) ---
+    from src.kv import clear_clarify_state, get_clarify_state
+    clarify_state = await get_clarify_state(chat_id)
+    if clarify_state:
+        answer_lower = user_message.lower()
+        await clear_clarify_state(chat_id)
+        if any(k in answer_lower for k in CONFIRM_KEYWORDS):
+            # User mengonfirmasi — proses ulang perintah asli yang ambigu lewat pipeline normal
+            user_message = clarify_state.get("perintah_asli") or user_message
+        elif any(k in answer_lower for k in SKIP_KEYWORDS):
+            await update.effective_chat.send_message("Baik, abaikan saja pertanyaan tadi. Ada lagi yang bisa aku bantu?")
+            return
+        # selain itu (jawaban tidak jelas), lanjutkan proses pesan apa adanya
+
     # Rate limiting
 
     if not await check_rate_limit(chat_id):
@@ -429,6 +534,10 @@ async def handle_message(
             await update.effective_chat.send_message("Baik, task telah dilewati. Apakah ada hal lain yang bisa saya bantu?")
             return
 
+        if is_status_request(user_message):
+            await update.effective_chat.send_message(build_task_status_message(pending_task))
+            return
+
         if is_retry_request(user_message):
             await update.effective_chat.send_action("typing")
             retry_result = await retry_pending_task(chat_id)
@@ -446,6 +555,13 @@ async def handle_message(
                     "Proses ini mengalami kendala teknis. Apakah Anda ingin mencoba ulang atau melewati task ini?"
                 )
                 return
+
+    # Status task ditanyakan padahal tidak ada task berjalan
+    if is_status_request(user_message) and not pending_task:
+        await update.effective_chat.send_message(
+            "Saat ini tidak ada task yang sedang diproses. Mau aku bantu apa lagi? 😊"
+        )
+        return
 
     # Deteksi jika pesan berisi aturan/preferensi baru untuk disimpan ke Notion
     if is_rule_message(user_message):
@@ -470,6 +586,16 @@ async def handle_message(
             await update.effective_chat.send_message(
                 "Aku belum punya diagnosis error. Coba tanya dulu 'ada error apa?'"
             )
+            return
+
+    # --- Klarifikasi Ask-Before-Act: deteksi perintah ambigu (brief.md) ---
+    # Hanya bertanya jika benar-benar ambigu dan menyangkut fitur spesifik; perintah jelas langsung lanjut.
+    if is_ambiguous(user_message):
+        target_question = get_clarify_question(user_message)
+        if target_question != "Maksud kamu apa ya? Bisa lebih spesifik?":
+            from src.kv import save_clarify_state
+            await save_clarify_state(chat_id, user_message)
+            await update.effective_chat.send_message(target_question)
             return
 
     # Deteksi intent untuk menentukan Fast Path / Slow Path (dengan dukungan konteks percakapan)
@@ -525,6 +651,31 @@ async def handle_message(
         )
 
         # Jalankan pemrosesan background secara instan jika event loop berjalan
+        asyncio.create_task(process_pending_task(target_chat_id=chat_id))
+        return
+
+    # --- Akademik (ERINE): Acknowledge First, Process Later (brief.md) ---
+    # Intent akademik diproses di background agar tidak memblokir webhook (ERINE bisa lambat/timeout).
+    if intent == "akademik":
+        from src.handlers import process_pending_task
+        from src.kv import save_pending_task, save_progress_message_id
+
+        progres_msg = await update.effective_chat.send_message(
+            "⏳ Baik, permintaan kamu sedang diproses. Aku kabari setelah selesai ya."
+        )
+        msg_id = progres_msg.message_id if progres_msg else None
+
+        if msg_id:
+            await save_progress_message_id(chat_id, msg_id)
+
+        await save_pending_task(
+            chat_id=chat_id,
+            user_message=user_message,
+            intent=intent,
+            user_name=user_name,
+            message_id=msg_id,
+        )
+
         asyncio.create_task(process_pending_task(target_chat_id=chat_id))
         return
 
