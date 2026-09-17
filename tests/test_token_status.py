@@ -11,7 +11,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import TOKEN_REGISTRY
-from src.tools import TOOL_DECLARATIONS, TOOL_EXECUTORS, TOOLS_BY_INTENT, check_token_status
+from src.tools import (
+    TOOL_DECLARATIONS,
+    TOOL_EXECUTORS,
+    TOOLS_BY_INTENT,
+    check_token_status,
+    check_token_status_report,
+)
 
 
 class TestTokenRegistry(unittest.TestCase):
@@ -122,6 +128,44 @@ class TestCheckTokenStatus(unittest.IsolatedAsyncioTestCase):
         result = await check_token_status(service_filter="Groq")
         self.assertIn("✅ Groq: valid", result)
         self.assertNotIn("Gemini", result)
+
+
+class TestCheckTokenStatusReport(unittest.IsolatedAsyncioTestCase):
+    """Tes check_token_status_report (output terstruktur untuk endpoint JSON)."""
+
+    def setUp(self):
+        for key in TOKEN_REGISTRY:
+            os.environ.pop(key, None)
+
+    @patch("src.kv.get_token", new_callable=AsyncMock)
+    @patch("httpx.AsyncClient.get")
+    async def test_report_structure(self, mock_get, mock_token):
+        mock_token.return_value = None
+        os.environ["GROQ_API_KEY"] = "sk-groq"
+
+        async def fake_get(url, headers=None):
+            resp = MagicMock()
+            resp.status_code = 200
+            return resp
+
+        mock_get.side_effect = fake_get
+
+        report = await check_token_status_report()
+        self.assertIsInstance(report, list)
+        by_service = {r["service"]: r for r in report}
+        self.assertEqual(by_service["Groq"]["status"], "valid")
+        self.assertIn("env_key", by_service["Groq"])
+        self.assertEqual(by_service["Mistral"]["status"], "unconfigured")
+        # Tidak membocorkan token
+        for r in report:
+            self.assertNotIn("sk-groq", str(r))
+
+    @patch("src.kv.get_token", new_callable=AsyncMock)
+    async def test_report_unconfigured_oauth(self, mock_token):
+        mock_token.return_value = None
+        report = await check_token_status_report()
+        by_service = {r["service"]: r for r in report}
+        self.assertEqual(by_service["Google Drive"]["status"], "unconfigured")
 
 
 if __name__ == "__main__":

@@ -2908,24 +2908,23 @@ async def identify_image_subject(
 async def execute_check_feature_health() -> str:
     """
     Memeriksa kesehatan semua fitur Oline (brief.md).
+    Status efektif memakai SATU sumber kebenaran (src.kv.get_feature_status).
     Returns formatted string dengan status kesehatan fitur.
     """
     from src.health_check import check_all_features
-    from src.kv import get_failure_count, is_feature_enabled
+    from src.kv import get_failure_count, get_feature_status
 
     results = await check_all_features()
     lines = ["🩺 Status Kesehatan Fitur:\n"]
 
     for feature, ok in results.items():
-        enabled = await is_feature_enabled(feature)
+        enabled = await get_feature_status(feature)
         fail_count = await get_failure_count(feature)
 
         if not enabled:
-            lines.append(f"❌ {feature} (dinonaktifkan)")
+            lines.append(f"❌ {feature} (dinonaktifkan oleh user/sistem)")
         elif ok:
             lines.append(f"✅ {feature}")
-        elif fail_count >= 3:
-            lines.append(f"❌ {feature} (gagal {fail_count}x, dinonaktifkan sementara)")
         elif fail_count > 0:
             lines.append(f"❌ {feature} (gagal {fail_count}x)")
         else:
@@ -2936,16 +2935,16 @@ async def execute_check_feature_health() -> str:
 
 async def execute_toggle_feature(feature: str, status: bool) -> str:
     """
-    Mengaktifkan atau menonaktifkan fitur Oline di Vercel KV (brief.md).
+    Mengaktifkan atau menonaktifkan fitur Oline (level user) di Vercel KV (brief.md).
     """
     from src.config import FITUR_LIST
-    from src.kv import set_feature_status
+    from src.kv import set_user_feature
 
     clean_feat = (feature or "").strip().lower()
     if clean_feat not in FITUR_LIST:
         return f"Fitur '{feature}' tidak dikenal. Fitur yang tersedia: {', '.join(FITUR_LIST)}"
 
-    await set_feature_status(clean_feat, status)
+    await set_user_feature(clean_feat, status)
     state = "diaktifkan" if status else "dinonaktifkan"
     return f"Fitur '{clean_feat}' berhasil {state}."
 
@@ -3065,23 +3064,41 @@ async def check_token_status(service_filter: str = "") -> str:
         if filter_lower and filter_lower not in service.lower():
             continue
 
-        token = os.environ.get(env_key, "")
-        if not token:
-            lines.append(f"⚠️ {service}: tidak dikonfigurasi")
-            continue
-
-        # Uji khusus OAuth (Google Drive / Calendar)
+        # Uji khusus OAuth (Google Drive / Calendar) — token dibaca dari KV dulu, fallback env
         if info.get("test_url") == "oauth":
+            from src.config import token_key_for_env
+            from src.kv import get_token
+            kv_token = await get_token(token_key_for_env(env_key))
+            token = (kv_token or os.environ.get(env_key, "") or "").strip()
+            if not token:
+                lines.append(f"⚠️ {service}: tidak dikonfigurasi")
+                continue
             try:
                 if "Drive" in service:
                     from src.drive import get_drive_service
                     get_drive_service()
                 elif "Calendar" in service:
-                    from src.calendar_tools import get_calendar_service
+                    try:
+                        from src.calendar_tools import get_calendar_service
+                    except ImportError:
+                        lines.append(f"⚠️ {service}: integrasi Calendar belum tersedia")
+                        continue
                     get_calendar_service()
                 lines.append(f"✅ {service}: valid")
-            except Exception:
-                lines.append(f"❌ {service}: token tidak valid")
+            except Exception as e:
+                err_str = str(e)
+                if "invalid_grant" in err_str:
+                    lines.append(
+                        f"❌ {service}: refresh token invalid_grant (sudah dicabut/kedaluwarsa). "
+                        f"Perbarui via /set_token {token_key_for_env(env_key)} <refresh_token>"
+                    )
+                else:
+                    lines.append(f"❌ {service}: token tidak valid")
+            continue
+
+        token = os.environ.get(env_key, "")
+        if not token:
+            lines.append(f"⚠️ {service}: tidak dikonfigurasi")
             continue
 
         # Uji HTTP ringan
@@ -3115,6 +3132,80 @@ async def check_token_status(service_filter: str = "") -> str:
         await set_cache(cache_key, result, ttl_seconds=300)
 
     return result
+
+
+async def check_token_status_report() -> list[dict[str, Any]]:
+    """
+    Menguji semua token di TOKEN_REGISTRY dan mengembalikan hasil TERSTRUKTUR (JSON-friendly).
+    Tidak memakai cache maupun AI — eksekusi langsung untuk endpoint /api/token_check.
+
+    Returns: list of dict:
+        {"service": str, "env_key": str, "status": str, "detail": str}
+        status: "valid" | "invalid" | "unconfigured" | "warning" | "unavailable"
+    """
+    from src.config import TOKEN_REGISTRY, token_key_for_env
+    from src.kv import get_token
+
+    entries: list[dict[str, Any]] = []
+
+    for env_key, info in TOKEN_REGISTRY.items():
+        service = info["service"]
+
+        # --- Uji khusus OAuth (Google Drive / Calendar), token dari KV dulu lalu env ---
+        if info.get("test_url") == "oauth":
+            kv_token = await get_token(token_key_for_env(env_key))
+            token = (kv_token or os.environ.get(env_key, "") or "").strip()
+            if not token:
+                entries.append({"service": service, "env_key": env_key, "status": "unconfigured", "detail": "tidak dikonfigurasi"})
+                continue
+            try:
+                if "Drive" in service:
+                    from src.drive import get_drive_service
+                    get_drive_service()
+                elif "Calendar" in service:
+                    try:
+                        from src.calendar_tools import get_calendar_service
+                    except ImportError:
+                        entries.append({"service": service, "env_key": env_key, "status": "unavailable", "detail": "integrasi Calendar belum tersedia"})
+                        continue
+                    get_calendar_service()
+                entries.append({"service": service, "env_key": env_key, "status": "valid", "detail": "token valid"})
+            except Exception as e:
+                if "invalid_grant" in str(e):
+                    entries.append({"service": service, "env_key": env_key, "status": "invalid", "detail": "invalid_grant (dicabut/kedaluwarsa)"})
+                else:
+                    entries.append({"service": service, "env_key": env_key, "status": "invalid", "detail": "token tidak valid"})
+            continue
+
+        # --- Uji HTTP ringan ---
+        token = os.environ.get(env_key, "").strip()
+        if not token:
+            entries.append({"service": service, "env_key": env_key, "status": "unconfigured", "detail": "tidak dikonfigurasi"})
+            continue
+
+        url = info["test_url"].replace("{key}", token)
+        if "{ERINE_API_URL}" in url:
+            url = url.replace("{ERINE_API_URL}", os.environ.get("ERINE_API_URL", ""))
+
+        headers = info["headers"](token) if callable(info.get("headers")) else {}
+
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(url, headers=headers)
+            if resp.status_code in (200, 201):
+                entries.append({"service": service, "env_key": env_key, "status": "valid", "detail": "valid"})
+            elif resp.status_code in (401, 403):
+                entries.append({"service": service, "env_key": env_key, "status": "invalid", "detail": "unauthorized"})
+            elif resp.status_code == 404:
+                entries.append({"service": service, "env_key": env_key, "status": "warning", "detail": "endpoint tidak ditemukan"})
+            else:
+                entries.append({"service": service, "env_key": env_key, "status": "warning", "detail": f"status {resp.status_code}"})
+        except httpx.TimeoutException:
+            entries.append({"service": service, "env_key": env_key, "status": "warning", "detail": "timeout"})
+        except Exception as e:
+            entries.append({"service": service, "env_key": env_key, "status": "warning", "detail": f"error {type(e).__name__}"})
+
+    return entries
 
 
 def resolve_token_service(service: str) -> tuple[Optional[str], Optional[str]]:
@@ -3164,13 +3255,22 @@ async def renew_token(service: str = "", new_token: str = "") -> str:
             f"/set_token {service.strip()} <token>"
         )
 
-    # User sudah mengirim token baru -> pasang ke Vercel env + redeploy
-    from src.vercel_manage import update_token_and_redeploy
-    result = await update_token_and_redeploy(env_key, new_token)
-    if "error" in result:
-        return f"❌ Gagal memperbarui token {service_label}: {result['error']}"
-    msg = result.get("message", "")
-    return f"✅ Token {service_label} berhasil diperbarui dan langsung aktif.\n{msg}".strip()
+    # User sudah mengirim token baru -> simpan ke Vercel KV (Kelola Token via KV).
+    # Token langsung aktif tanpa redeploy (dibaca dari KV oleh get_drive_service dll).
+    from src.config import token_key_for_env
+    from src.kv import reset_failure_count, save_token, set_user_feature
+
+    token_key = token_key_for_env(env_key)
+    ok = await save_token(token_key, new_token)
+    if not ok:
+        return (
+            f"❌ Gagal menyimpan token {service_label} ke Vercel KV. "
+            f"Pastikan KV_REST_API_URL / KV_REST_API_TOKEN sudah dikonfigurasi."
+        )
+
+    await reset_failure_count(token_key)
+    await set_user_feature(token_key, True)
+    return f"✅ Token {service_label} berhasil diperbarui, disimpan di Vercel KV, dan langsung aktif."
 
 
 # Map nama tool ke executor function

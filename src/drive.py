@@ -21,12 +21,28 @@ def get_drive_folder_id() -> str:
     return folder_id
 
 
+def _get_refresh_token() -> str:
+    """
+    Mengambil refresh token Google Drive dengan prioritas: Vercel KV (token:drive) > env.
+    Token di KV memungkinkan Oline memperbarui sendiri tanpa redeploy (Kelola Token via KV).
+    """
+    try:
+        from src.kv import get_token_sync
+        kv_token = get_token_sync("drive")
+        if kv_token and kv_token.strip():
+            return kv_token.strip()
+    except Exception as e:
+        logger.warning("Gagal membaca token Drive dari KV, fallback ke env: %s", str(e))
+    return os.environ.get("GOOGLE_DRIVE_REFRESH_TOKEN", "").strip()
+
+
 def get_drive_service():
     """
     Inisialisasi dan mengembalikan service Google Drive v3 menggunakan OAuth 2.0 User Refresh Token.
     Menggunakan akun pribadi pemilik bot sehingga file tersimpan menggunakan kuota 15 GB pribadi.
+    Refresh token dibaca dari Vercel KV terlebih dahulu, fallback ke env.
     """
-    refresh_token = os.environ.get("GOOGLE_DRIVE_REFRESH_TOKEN", "").strip()
+    refresh_token = _get_refresh_token()
     client_id = os.environ.get("GOOGLE_DRIVE_CLIENT_ID", "").strip()
     client_secret = os.environ.get("GOOGLE_DRIVE_CLIENT_SECRET", "").strip()
 
@@ -67,8 +83,24 @@ def get_drive_service():
 
         return build("drive", "v3", credentials=creds)
     except Exception as e:
-        logger.error("Failed to initialize Google Drive OAuth 2.0 service: %s", str(e))
-        raise RuntimeError(f"Gagal menginisialisasi Google Drive API via OAuth 2.0: {str(e)}")
+        err_str = str(e)
+        logger.error("Failed to initialize Google Drive OAuth 2.0 service: %s", err_str)
+        if "invalid_grant" in err_str:
+            # Notifikasi token error: beri tahu user cara memperbarui via KV.
+            try:
+                from src.kv import log_error
+                import asyncio
+                asyncio.run(log_error(
+                    "Google Drive refresh token invalid_grant (dicabut/kedaluwarsa). "
+                    "Gunakan /set_token drive <refresh_token>."
+                ))
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Token Google Drive tidak valid (invalid_grant — sudah dicabut/kedaluwarsa). "
+                "Perbarui dengan kirim: /set_token drive <refresh_token>"
+            )
+        raise RuntimeError(f"Gagal menginisialisasi Google Drive API via OAuth 2.0: {err_str}")
 
 
 

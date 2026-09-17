@@ -34,6 +34,7 @@ AI_USAGE_PREFIX = "ai_usage"
 FEATURE_FLAGS_KEY = "feature_flags"
 FAILURE_COUNT_PREFIX = "failure_count"
 CLARIFY_PREFIX = "clarify"
+TOKEN_PREFIX = "token"
 
 
 
@@ -520,6 +521,86 @@ async def clear_clarify_state(chat_id: int) -> bool:
     return result is not None
 
 
+# --- Token Storage (Kelola Token via KV) ---
+# Token OAuth / API key disimpan di Vercel KV (persisten, tanpa TTL) sehingga
+# bisa diperbarui runtime oleh Oline tanpa redeploy dan tanpa commit secret ke git.
+
+async def save_token(service_key: str, token: str) -> bool:
+    """
+    Menyimpan token ke Vercel KV (key `token:<service_key>`).
+    Menyimpan juga timestamp update untuk referensi.
+    """
+    if not service_key or not token:
+        return False
+    key = f"{TOKEN_PREFIX}:{service_key}"
+    payload = json.dumps({
+        "value": token,
+        "updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }, ensure_ascii=False)
+    res = await _kv_request(["SET", key, payload])
+    return res is not None
+
+
+async def get_token(service_key: str) -> Optional[str]:
+    """
+    Mengambil token dari Vercel KV (key `token:<service_key>`).
+    Returns str token atau None jika tidak ada.
+    """
+    if not service_key:
+        return None
+    key = f"{TOKEN_PREFIX}:{service_key}"
+    res = await _kv_request(["GET", key])
+    if res and res.get("result"):
+        try:
+            data = res["result"]
+            if isinstance(data, str):
+                data = json.loads(data)
+            if isinstance(data, dict):
+                return data.get("value")
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning("Error parsing token dari KV: %s", str(e))
+    return None
+
+
+async def clear_token(service_key: str) -> bool:
+    """
+    Menghapus token dari Vercel KV.
+    """
+    if not service_key:
+        return False
+    key = f"{TOKEN_PREFIX}:{service_key}"
+    res = await _kv_request(["DEL", key])
+    return res is not None
+
+
+def get_token_sync(service_key: str) -> Optional[str]:
+    """
+    Versi sinkron untuk membaca token dari KV (dipakai fungsi sinkron seperti
+    get_drive_service). Menggunakan endpoint REST /get/<key> Upstash/Vercel KV.
+    """
+    kv_url, kv_token = _get_kv_credentials()
+    if not kv_url or not kv_token or not service_key:
+        return None
+
+    key = f"{TOKEN_PREFIX}:{service_key}"
+    url = f"{kv_url.rstrip('/')}/get/{key}"
+    try:
+        import requests
+        resp = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {kv_token}"},
+            timeout=3.0,
+        )
+        data = resp.json().get("result")
+        if isinstance(data, str):
+            data = json.loads(data)
+        if isinstance(data, dict):
+            return data.get("value")
+    except Exception as e:
+        logger.warning("get_token_sync error untuk '%s': %s", service_key, str(e))
+    return None
+
+
 async def log_error(error_message: str) -> bool:
     """
     Mencatat log kesalahan teknis ke Vercel KV pada key error_logs:YYYY-MM-DD.
@@ -858,7 +939,11 @@ async def get_all_ai_usage() -> dict[str, dict[str, int]]:
 
 
 # --- Feature Flag & Failure Tracking (brief.md) ---
-
+# Model status fitur disimpan sebagai dict per fitur:
+#   {"user_disabled": bool, "system_disabled": bool}
+# - user_disabled : dimatikan oleh user (toggle_feature / "matikan fitur X").
+# - system_disabled: dimatikan oleh sistem. PENTING: health check TIDAK menonaktifkan
+#     otomatis — hanya memberi notifikasi, sehingga status tetap persisten (keputusan user).
 DEFAULT_FEATURE_FLAGS = {
     "landing_page": True,
     "vision": True,
@@ -871,10 +956,14 @@ DEFAULT_FEATURE_FLAGS = {
 }
 
 
-async def get_all_feature_flags() -> dict[str, bool]:
-    """Mengambil dict status semua feature flags dari Vercel KV."""
+def _default_flag_entry() -> dict:
+    return {"user_disabled": False, "system_disabled": False}
+
+
+async def get_all_feature_flags() -> dict[str, dict]:
+    """Mengambil dict status semua feature flags dari Vercel KV (format user/system)."""
     res = await _kv_request(["GET", FEATURE_FLAGS_KEY])
-    flags = dict(DEFAULT_FEATURE_FLAGS)
+    flags: dict[str, dict] = {f: _default_flag_entry() for f in DEFAULT_FEATURE_FLAGS}
     if res and res.get("result"):
         try:
             data = res["result"]
@@ -885,31 +974,63 @@ async def get_all_feature_flags() -> dict[str, bool]:
             else:
                 parsed = {}
             if isinstance(parsed, dict):
-                flags.update(parsed)
+                for feature, value in parsed.items():
+                    entry = flags.setdefault(feature, _default_flag_entry())
+                    if isinstance(value, dict):
+                        entry["user_disabled"] = bool(value.get("user_disabled", False))
+                        entry["system_disabled"] = bool(value.get("system_disabled", False))
+                    elif isinstance(value, bool):
+                        # Migrasi data lama (bool): False = dinonaktifkan oleh user.
+                        entry["user_disabled"] = not value
+                        entry["system_disabled"] = False
         except Exception as e:
             logger.warning("Error parsing feature_flags from KV: %s", str(e))
     return flags
 
 
-async def get_feature_status(feature: str) -> bool:
-    """Mengambil status aktif/nonaktif fitur tertentu dari Vercel KV."""
+async def _set_feature_entry(feature: str, **updates: bool) -> bool:
+    """Menulis satu atau lebih flag status fitur ke Vercel KV (persisten)."""
     flags = await get_all_feature_flags()
-    return flags.get(feature, False)
-
-
-async def set_feature_status(feature: str, status: bool) -> bool:
-    """Menyimpan status aktif/nonaktif fitur tertentu ke Vercel KV."""
-    flags = await get_all_feature_flags()
-    flags[feature] = status
+    entry = flags.setdefault(feature, _default_flag_entry())
+    entry.update(updates)
     payload = json.dumps(flags, ensure_ascii=False)
     res = await _kv_request(["SET", FEATURE_FLAGS_KEY, payload])
     return res is not None
 
 
+async def set_user_feature(feature: str, enabled: bool) -> bool:
+    """Mengatur flag disable dari sisi user. Saat diaktifkan, hapus juga flag sistem (user override)."""
+    updates = {"user_disabled": not enabled}
+    if enabled:
+        updates["system_disabled"] = False
+    return await _set_feature_entry(feature, **updates)
+
+
+async def set_system_feature(feature: str, enabled: bool) -> bool:
+    """Mengatur flag disable dari sisi sistem (terpisah dari keputusan user)."""
+    return await _set_feature_entry(feature, system_disabled=not enabled)
+
+
+async def get_feature_status(feature: str) -> bool:
+    """
+    Status efektif fitur (SATU sumber kebenaran): aktif jika TIDAK di-disable
+    oleh user DAN oleh sistem.
+    """
+    flags = await get_all_feature_flags()
+    entry = flags.get(feature)
+    if entry is None:
+        return DEFAULT_FEATURE_FLAGS.get(feature, True)
+    return not (bool(entry.get("user_disabled")) or bool(entry.get("system_disabled")))
+
+
+async def set_feature_status(feature: str, status: bool) -> bool:
+    """Alias setter level-user untuk kompatibilitas (toggle)."""
+    return await set_user_feature(feature, status)
+
+
 async def is_feature_enabled(feature: str) -> bool:
-    """Memeriksa apakah fitur diizinkan/aktif."""
-    status = await get_feature_status(feature)
-    return status is True
+    """Memeriksa apakah fitur aktif (user & sistem tidak menonaktifkannya)."""
+    return await get_feature_status(feature)
 
 
 async def increment_failure_count(feature: str) -> int:
@@ -946,12 +1067,11 @@ async def reset_failure_count(feature: str) -> bool:
 
 
 async def toggle_feature(feature: str, status: bool) -> bool:
-    """Mengubah status aktif/nonaktif fitur di Vercel KV (brief.md)."""
-    return await set_feature_status(feature, status)
+    """Mengubah status aktif/nonaktif fitur dari sisi user (brief.md)."""
+    return await set_user_feature(feature, status)
 
 
 async def is_feature_active(feature: str) -> bool:
-    """Memeriksa apakah fitur aktif di Vercel KV (default True jika belum di-set)."""
-    flags = await get_all_feature_flags()
-    return flags.get(feature, True)
+    """Memeriksa apakah fitur aktif (default True jika belum di-set)."""
+    return await get_feature_status(feature)
 

@@ -1,7 +1,8 @@
 """
 Modul Health Check & Health Monitoring System untuk Oline Bot.
 Memeriksa kesehatan layanan internal & external (Vercel, Notion, Drive, Neo4j, Moondream, Search).
-Menyediakan fitur otomatis circuit-breaker (disable fitur setelah 3x gagal berturut-turut + notifikasi).
+Health check TIDAK menonaktifkan fitur otomatis — hanya mencatat kegagalan & memberi notifikasi,
+agar status fitur tetap persisten (keputusan enable/disable sepenuhnya di tangan user).
 """
 
 import asyncio
@@ -13,11 +14,8 @@ import httpx
 
 from src.kv import (
     get_failure_count,
-    get_feature_status,
     increment_failure_count,
-    log_error,
     reset_failure_count,
-    set_feature_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -174,12 +172,12 @@ async def check_all_features() -> dict[str, bool]:
 
 async def run_monitoring_and_notify(chat_id: Optional[int] = None) -> dict[str, Any]:
     """
-    Jalankan health check untuk semua fitur, kelola failure counter,
-    otomatis nonaktifkan fitur jika gagal 3x berturut-turut, dan kirimkan notifikasi ke chat Telegram.
+    Jalankan health check untuk semua fitur, kelola failure counter, dan kirim notifikasi
+    jika ada fitur bermasalah. TIDAK menonaktifkan fitur otomatis — status fitur persisten.
     """
     results = await check_all_features()
-    disabled_features = []
     status_summary = {}
+    problem_features = []
 
     for feature, ok in results.items():
         status_summary[feature] = ok
@@ -187,23 +185,19 @@ async def run_monitoring_and_notify(chat_id: Optional[int] = None) -> dict[str, 
             await reset_failure_count(feature)
         else:
             count = await increment_failure_count(feature)
-            if count >= 3:
-                # Cek apakah sebelumnya aktif
-                currently_enabled = await get_feature_status(feature)
-                if currently_enabled:
-                    await set_feature_status(feature, False)
-                    disabled_features.append((feature, count))
-                    await log_error(f"Fitur '{feature}' dinonaktifkan otomatis setelah {count}x gagal berturut-turut.")
+            problem_features.append((feature, count))
 
-    # Kirim notifikasi jika ada fitur yang baru saja dinonaktifkan
-    if disabled_features and chat_id:
+    # Kirim notifikasi jika ada fitur bermasalah (tanpa menonaktifkan otomatis)
+    if problem_features and chat_id:
         from src.handlers import send_telegram_message
-        for feat, count in disabled_features:
-            alert_text = f"⚠️ Fitur {feat} terdeteksi bermasalah (gagal {count}x) dan dinonaktifkan sementara."
-            await send_telegram_message(chat_id, alert_text)
+        lines = ["⚠️ Beberapa fitur sedang bermasalah (tidak dinonaktifkan otomatis):"]
+        for feat, count in problem_features:
+            lines.append(f"- {feat} (gagal {count}x)")
+        lines.append("Fitur tetap aktif. Periksa token/kredensial bila perlu.")
+        await send_telegram_message(chat_id, "\n".join(lines))
 
     return {
         "results": results,
-        "disabled_count": len(disabled_features),
-        "disabled_features": [f[0] for f in disabled_features],
+        "problem_count": len(problem_features),
+        "problem_features": [f[0] for f in problem_features],
     }

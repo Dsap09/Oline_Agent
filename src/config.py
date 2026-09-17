@@ -163,3 +163,15 @@ RENEWABLE_TOKENS = {
     },
 }
 
+
+def token_key_for_env(env_key: str) -> str:
+    """
+    Memetakan nama env var ke key penyimpanan token di Vercel KV (pendek & stabil).
+    Contoh: GOOGLE_DRIVE_REFRESH_TOKEN -> "drive".
+    """
+    mapping = {
+        "GOOGLE_DRIVE_REFRESH_TOKEN": "drive",
+        "GOOGLE_CALENDAR_REFRESH_TOKEN": "calendar",
+    }
+    return mapping.get(env_key, env_key.lower())
+

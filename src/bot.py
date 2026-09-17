@@ -106,7 +106,8 @@ async def handle_set_token(
 ) -> None:
     """
     Handler untuk command /set_token <layanan> <token>.
-    Oline memasang token baru ke dirinya sendiri (update env Vercel + redeploy).
+    Menyimpan token baru ke Vercel KV (Kelola Token via KV), bukan ke env.
+    Token langsung aktif (dibaca drive.py dari KV) tanpa redeploy.
     Format: /set_token drive <refresh_token>
     """
     if not update.effective_chat or not update.message:
@@ -126,9 +127,32 @@ async def handle_set_token(
         await update.effective_chat.send_message("Token tidak boleh kosong.")
         return
 
-    from src.tools import renew_token
-    response = await renew_token(service=service, new_token=new_token)
-    await update.effective_chat.send_message(response)
+    from src.config import token_key_for_env
+    from src.kv import reset_failure_count, save_token, set_user_feature
+    from src.tools import resolve_token_service
+
+    env_key, service_label = resolve_token_service(service)
+    if not env_key:
+        await update.effective_chat.send_message(
+            f"Layanan '{service}' tidak dikenal. Contoh: /set_token drive <token>"
+        )
+        return
+
+    token_key = token_key_for_env(env_key)
+    ok = await save_token(token_key, new_token)
+    if not ok:
+        await update.effective_chat.send_message(
+            "❌ Gagal menyimpan token ke Vercel KV. Pastikan KV_REST_API_URL / KV_REST_API_TOKEN sudah dikonfigurasi."
+        )
+        return
+
+    # Bersihkan catatan kegagalan & pastikan fitur aktif (user sedang memperbaiki token)
+    await reset_failure_count(token_key)
+    await set_user_feature(token_key, True)
+
+    await update.effective_chat.send_message(
+        f"✅ Token {service_label} berhasil disimpan di Vercel KV dan langsung aktif."
+    )
 
 
 async def handle_jurnal_command(

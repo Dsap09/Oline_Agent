@@ -12,6 +12,10 @@
     {
       "src": "api/process_pending.py",
       "use": "@vercel/python"
+    },
+    {
+      "src": "api/token_check.py",
+      "use": "@vercel/python"
     }
   ],
   "routes": [
@@ -22,6 +26,10 @@
     {
       "src": "^/api/process_pending/?$",
       "dest": "/api/process_pending.py"
+    },
+    {
+      "src": "^/api/token_check/?$",
+      "dest": "/api/token_check.py"
     },
     {
       "src": "^/(.*)$",

@@ -88,18 +88,20 @@ class TestRenewToken(unittest.IsolatedAsyncioTestCase):
         result = await renew_token(service="xxx")
         self.assertIn("tidak dikenal", result)
 
-    @patch("src.vercel_manage.update_token_and_redeploy", new_callable=AsyncMock)
-    async def test_with_new_token_calls_update(self, mock_update):
-        mock_update.return_value = {"status": "success", "message": "Redeploy dipicu."}
+    @patch("src.kv.save_token", new_callable=AsyncMock)
+    @patch("src.kv.reset_failure_count", new_callable=AsyncMock)
+    @patch("src.kv.set_user_feature", new_callable=AsyncMock)
+    async def test_with_new_token_saves_to_kv(self, mock_feat, mock_reset, mock_save):
+        mock_save.return_value = True
         result = await renew_token(service="drive", new_token="1//abc123")
-        mock_update.assert_awaited_once_with("GOOGLE_DRIVE_REFRESH_TOKEN", "1//abc123")
+        mock_save.assert_awaited_once_with("drive", "1//abc123")
         self.assertIn("berhasil diperbarui", result)
 
-    @patch("src.vercel_manage.update_token_and_redeploy", new_callable=AsyncMock)
-    async def test_with_new_token_error(self, mock_update):
-        mock_update.return_value = {"error": "VERCEL_API_TOKEN belum dikonfigurasi."}
+    @patch("src.kv.save_token", new_callable=AsyncMock)
+    async def test_with_new_token_save_fail(self, mock_save):
+        mock_save.return_value = False
         result = await renew_token(service="drive", new_token="1//abc123")
-        self.assertIn("Gagal memperbarui", result)
+        self.assertIn("Gagal menyimpan token", result)
 
 
 if __name__ == "__main__":
