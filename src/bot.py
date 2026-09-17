@@ -141,6 +141,7 @@ async def handle_set_token(
     token_key = token_key_for_env(env_key)
     ok = await save_token(token_key, new_token)
     if not ok:
+        logger.error("set_token gagal disimpan ke KV untuk service '%s' (key %s)", service, token_key)
         await update.effective_chat.send_message(
             "❌ Gagal menyimpan token ke Vercel KV. Pastikan KV_REST_API_URL / KV_REST_API_TOKEN sudah dikonfigurasi."
         )
@@ -150,6 +151,8 @@ async def handle_set_token(
     await reset_failure_count(token_key)
     await set_user_feature(token_key, True)
 
+    masked = (new_token[:4] + "…") if len(new_token) > 4 else "***"
+    logger.info("set_token berhasil: service='%s' key='%s' token=%s", service, token_key, masked)
     await update.effective_chat.send_message(
         f"✅ Token {service_label} berhasil disimpan di Vercel KV dan langsung aktif."
     )

@@ -391,6 +391,79 @@ async def save_memory_to_notion(
         return f"Gagal menyimpan memori: {str(e)}"
 
 
+async def verify_notion_databases() -> dict[str, Any]:
+    """
+    Memverifikasi bahwa kedua database Notion (Catatan & Memori) masih ada dan
+    masih dibagikan ke Integrasi Oline dengan men-query endpoint /v1/databases/{id}.
+    Returns dict {"results": {label: {"configured", "status", "title"/"detail"}}}.
+    """
+    api_key = os.environ.get("NOTION_API_KEY", "").strip()
+    if not api_key:
+        return {"error": "NOTION_API_KEY belum dikonfigurasi di environment variables."}
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+
+    dbs = {
+        "catatan": (os.environ.get("NOTION_DATABASE_ID", "") or "").strip(),
+        "memori": _get_notion_memory_db_id(),
+    }
+
+    results: dict[str, Any] = {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for label, raw in dbs.items():
+                db_id = extract_database_id(raw)
+                if not db_id:
+                    results[label] = {"configured": False, "status": "unconfigured"}
+                    continue
+                try:
+                    resp = await client.get(
+                        f"https://api.notion.com/v1/databases/{db_id}", headers=headers
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        title = ""
+                        raw_title = data.get("title") or []
+                        if raw_title and isinstance(raw_title[0], dict):
+                            title = raw_title[0].get("plain_text", "")
+                        results[label] = {
+                            "configured": True,
+                            "status": "ok",
+                            "database_id": db_id,
+                            "title": title,
+                        }
+                    elif resp.status_code == 404:
+                        results[label] = {
+                            "configured": True,
+                            "status": "not_shared",
+                            "database_id": db_id,
+                            "detail": "database tidak ditemukan / belum dibagikan ke Integrasi Oline",
+                        }
+                    else:
+                        results[label] = {
+                            "configured": True,
+                            "status": "error",
+                            "database_id": db_id,
+                            "detail": f"status {resp.status_code}",
+                        }
+                except Exception as e:
+                    results[label] = {
+                        "configured": True,
+                        "status": "error",
+                        "database_id": db_id,
+                        "detail": str(e),
+                    }
+    except Exception as e:
+        logger.error("Error verifying Notion databases: %s", str(e))
+        return {"error": f"Gagal menghubungi Notion API: {str(e)}"}
+
+    return {"results": results}
+
+
 async def read_memory_from_notion(
     memory_type: Optional[str] = None, force_refresh: bool = False
 ) -> str:

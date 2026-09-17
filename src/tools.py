@@ -117,8 +117,8 @@ renew_token_tool = {
     "name": "renew_token",
     "description": (
         "Memperbarui token yang kedaluwarsa/kadaluwarsa. Untuk token OAuth (Google Drive, Google Calendar), "
-        "Oline memandu user membuat token baru lalu memasangnya ke Vercel Environment Variables tanpa redeploy manual. "
-        "Untuk API key statis, Oline menerima token baru dan memasangnya. Gunakan saat pengguna meminta memperbarui token/kredensial."
+        "Oline memandu user membuat token baru lalu menyimpannya ke Vercel KV (tanpa redeploy, langsung aktif). "
+        "Untuk API key statis, Oline menerima token baru dan menyimpannya. Gunakan saat pengguna meminta memperbarui token/kredensial."
     ),
     "parameters": {
         "type": "object",
@@ -136,10 +136,20 @@ renew_token_tool = {
     },
 }
 
+check_notion_databases_tool = {
+    "name": "check_notion_databases",
+    "description": (
+        "Memeriksa bahwa kedua database Notion (Catatan & Memori) masih ada dan dibagikan ke Integrasi Oline. "
+        "Gunakan saat pengguna melaporkan gagal menyimpan ke Notion atau ingin cek status database Notion."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
 TOOL_DECLARATIONS = [
     panggil_erine_tool,
     check_token_status_tool,
     renew_token_tool,
+    check_notion_databases_tool,
 
     {
         "name": "get_movie_recommendation",
@@ -872,7 +882,7 @@ TOOLS_BY_INTENT = {
     ],
     "lokasi": ["get_nearby_places", "search_places_by_city"],
     "coding": ["execute_code", "read_vercel_logs"],
-    "notion": ["save_note_to_notion", "save_memory_to_notion", "add_notion_property"],
+    "notion": ["save_note_to_notion", "save_memory_to_notion", "add_notion_property", "check_notion_databases"],
     "preview": ["preview_with_codepen", "search_design_reference"],
     "deploy": [
         "deploy_to_vercel",
@@ -2551,6 +2561,33 @@ async def _lazy_add_notion_property(**kwargs):
     return await add_notion_property(**kwargs)
 
 
+async def check_notion_databases() -> str:
+    """
+    Memverifikasi bahwa kedua database Notion (Catatan & Memori) masih ada dan
+    masih dibagikan ke Integrasi Oline. Men-query API Notion langsung (bukan menebak).
+    """
+    from src.notion import verify_notion_databases
+
+    result = await verify_notion_databases()
+    if "error" in result:
+        return f"❌ {result['error']}"
+
+    lines = ["📓 Status Database Notion:\n"]
+    results = result.get("results", {})
+    for label, info in results.items():
+        status = info.get("status")
+        if not info.get("configured"):
+            lines.append(f"⚠️ {label}: tidak dikonfigurasi")
+        elif status == "ok":
+            title = info.get("title") or "tanpa judul"
+            lines.append(f"✅ {label}: tersedia ({title})")
+        elif status == "not_shared":
+            lines.append(f"❌ {label}: tidak dibagikan ke Integrasi Oline")
+        else:
+            lines.append(f"❌ {label}: error ({info.get('detail', '')})")
+    return "\n".join(lines)
+
+
 # --- Lazy Wrapper Functions untuk Neo4j (mengurangi cold start) ---
 
 async def _lazy_simpan_aktivitas_neo4j(chat_id: int = 0, **kwargs):
@@ -3229,9 +3266,8 @@ async def renew_token(service: str = "", new_token: str = "") -> str:
     """
     Token Renewal Assistant (brief.md):
     - Tanpa new_token: memberi panduan langkah-demi-langkah membuat token baru.
-    - Dengan new_token (token OAuth yang bisa dirotasi): Oline memasang token ke dirinya
-      sendiri dengan meng-update Environment Variable di Vercel lalu trigger redeploy
-      (tanpa menyimpan secret di KV dan tanpa commit ke git).
+    - Dengan new_token (token OAuth yang bisa dirotasi): Oline menyimpan token ke Vercel KV
+      (tanpa redeploy dan tanpa commit ke git). Token dibaca dari KV oleh get_drive_service.
     """
     from src.config import RENEWABLE_TOKENS
 
@@ -3270,6 +3306,8 @@ async def renew_token(service: str = "", new_token: str = "") -> str:
 
     await reset_failure_count(token_key)
     await set_user_feature(token_key, True)
+    masked = (new_token[:4] + "…") if len(new_token) > 4 else "***"
+    logger.info("renew_token: token '%s' disimpan ke KV (key=%s, token=%s)", service_label, token_key, masked)
     return f"✅ Token {service_label} berhasil diperbarui, disimpan di Vercel KV, dan langsung aktif."
 
 
@@ -3302,6 +3340,7 @@ TOOL_EXECUTORS = {
     "execute_code": execute_code,
     "save_note_to_notion": _lazy_save_note_to_notion,
     "save_memory_to_notion": _lazy_save_memory_to_notion,
+    "check_notion_databases": check_notion_databases,
     "add_notion_property": _lazy_add_notion_property,
     "preview_with_codepen": preview_with_codepen,
     "deploy_to_vercel": deploy_to_vercel,
