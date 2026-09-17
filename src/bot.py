@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import re
+from typing import Optional
 
 from telegram import Update
 from telegram.ext import (
@@ -549,6 +550,43 @@ def is_landing_page_generation_request(text: str, intent: str | None) -> bool:
     return True
 
 
+def _extract_notion_note(text: str) -> Optional[tuple[str, str]]:
+    """
+    Mengekstrak (title, content) untuk disimpan ke database CATATAN Notion.
+    Mengembalikan None jika pesan bukan permintaan simpan catatan, atau justru
+    permintaan memori/aturan/preferensi (yang ditangani save_memory_to_notion).
+    """
+    if not text:
+        return None
+
+    text_lower = text.lower().strip()
+    # Permintaan memori/aturan/preferensi → bukan simpan catatan umum
+    if any(rk in text_lower for rk in [
+        "aturan", "preferensi", "ingat bahwa", "ingat bahwa saya",
+        "panggil aku", "mulai sekarang", "simpan memori", "catat aturan", "catat preferensi",
+    ]):
+        return None
+
+    save_phrases = NOTE_REQUEST_KEYWORDS + [
+        "catatan notion", "notes notion", "simpan catatan", "tulis catatan",
+        "catat ini", "simpan ini", "simpan ke catatan",
+    ]
+    if not any(sp in text_lower for sp in save_phrases):
+        return None
+
+    # Buang prefiks perintah (simpan/catat/tulis ... ke notion :)
+    cleaned = re.sub(
+        r'^(simpan|catat|tulis|rekam|save|buat)\s*(ke|di|k)?\s*(catatan|note|notes|notion)?\s*(notion)?\s*[:,\-]?\s*',
+        '', text.strip(), flags=re.IGNORECASE,
+    )
+    cleaned = cleaned.strip(" :,;-")
+    if not cleaned:
+        return None
+
+    title = (cleaned.split('.')[0].strip()[:60]) or "Catatan"
+    return title, cleaned
+
+
 async def handle_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -695,6 +733,29 @@ async def handle_message(
             await update.effective_chat.send_message(
                 f"Fitur {feat_name} sedang dinonaktifkan. Mau diaktifkan lagi?"
             )
+            return
+
+    # --- Notion: pastikan simpan catatan BENAR-BENAR memanggil tool & terverifikasi (anti mengarang) ---
+    # Simpan catatan dieksekusi langsung, bukan diserahkan ke keputusan model yang bisa mengarang.
+    if intent == "notion":
+        extracted = _extract_notion_note(user_message)
+        if extracted:
+            title, content = extracted
+            from src.notion import save_note_to_notion
+            result = await save_note_to_notion(title=title, content=content)
+            ok = result.get("status") == "success"
+            logger.info(
+                "Notion note-save (imperatif): title=%r status=%s",
+                title, "success" if ok else result.get("error"),
+            )
+            if ok:
+                await update.effective_chat.send_message(
+                    f"✅ Catatan '{result.get('title')}' berhasil disimpan ke Notion."
+                )
+            else:
+                await update.effective_chat.send_message(
+                    f"❌ Gagal menyimpan catatan ke Notion: {result.get('error')}"
+                )
             return
 
     # --- Async Landing Page Path (Anti Gantung & Notifikasi Progres Satu Pesan) ---

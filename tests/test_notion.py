@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.bot import detect_intent, is_rule_message
+from src.bot import _extract_notion_note, detect_intent, is_rule_message
 from src.notion import (
     add_notion_property,
     extract_database_id,
@@ -130,6 +130,31 @@ class TestNotionIntegration(unittest.IsolatedAsyncioTestCase):
         post_payload = mock_post.call_args[1]["json"]
         # Memastikan parent database_id adalah NOTION_MEMORY_DATABASE_ID
         self.assertEqual(post_payload["parent"]["database_id"], "9fffc30101df806fa6ddf65ab5aa9999")
+
+
+class TestExtractNotionNote(unittest.TestCase):
+    """Tes ekstraksi title/content untuk simpan catatan Notion."""
+
+    def test_extract_simpan_ke_notion(self):
+        extracted = _extract_notion_note("simpan ke catatan Notion: besok kuliah pagi jam 7")
+        self.assertIsNotNone(extracted)
+        title, content = extracted
+        self.assertIn("besok kuliah pagi jam 7", content)
+        self.assertTrue(title)
+
+    def test_extract_catat_ke_notion(self):
+        extracted = _extract_notion_note("catat ke notion: beli telur dan roti")
+        self.assertIsNotNone(extracted)
+        _, content = extracted
+        self.assertIn("beli telur dan roti", content)
+
+    def test_memory_request_not_note(self):
+        # Permintaan aturan/preferensi → bukan simpan catatan umum
+        self.assertIsNone(_extract_notion_note("simpan aturan: selalu panggil saya kak"))
+        self.assertIsNone(_extract_notion_note("ingat bahwa saya suka kopi"))
+
+    def test_non_save_request(self):
+        self.assertIsNone(_extract_notion_note("apa isi database notion?"))
 
 
 if __name__ == "__main__":
