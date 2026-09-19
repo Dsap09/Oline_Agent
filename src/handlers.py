@@ -246,6 +246,15 @@ async def process_pending_task(target_chat_id: Optional[int] = None) -> dict[str
             if not success_edited:
                 await send_telegram_message(chat_id, response_text)
 
+            # Trigger self_monitor untuk intent berat yang diproses di background
+            # (paritas perilaku dengan slow path sinkron sebelumnya).
+            if not is_landing:
+                try:
+                    from src.self_monitor import self_monitor
+                    asyncio.create_task(self_monitor(chat_id))
+                except Exception as sm_err:
+                    logger.warning("Failed to trigger self_monitor: %s", str(sm_err))
+
             # Bersihkan task, checkpoint & progress message_id setelah sukses penuh
             await clear_pending_task(chat_id)
             await clear_progress_message_id(chat_id)

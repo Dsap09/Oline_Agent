@@ -298,6 +298,15 @@ HEAVY_KEYWORDS = {
     ],
 }
 
+# Intent berat (AI-driven/tool lambat) yang diproses di BACKGROUND (Acknowledge First,
+# Process Later) agar webhook cepat balas 200 dan tidak timeout (504) di Vercel.
+# Intent cepat (kuota, health, kelola_fitur, cek_token, renew_token, list/delete deploy,
+# simpan catatan Notion imperatif) tetap diproses sinkron.
+HEAVY_BACKGROUND_INTENTS = {
+    "saham", "cuaca", "rekomendasi", "suara", "jurnal", "drive",
+    "search", "gambar", "neo4j", "coding", "github", "vercel_logs", "lokasi",
+}
+
 
 
 
@@ -787,6 +796,31 @@ async def handle_message(
     # --- Akademik (ERINE): Acknowledge First, Process Later (brief.md) ---
     # Intent akademik diproses di background agar tidak memblokir webhook (ERINE bisa lambat/timeout).
     if intent == "akademik":
+        from src.handlers import process_pending_task
+        from src.kv import save_pending_task, save_progress_message_id
+
+        progres_msg = await update.effective_chat.send_message(
+            "⏳ Baik, permintaan kamu sedang diproses. Aku kabari setelah selesai ya."
+        )
+        msg_id = progres_msg.message_id if progres_msg else None
+
+        if msg_id:
+            await save_progress_message_id(chat_id, msg_id)
+
+        await save_pending_task(
+            chat_id=chat_id,
+            user_message=user_message,
+            intent=intent,
+            user_name=user_name,
+            message_id=msg_id,
+        )
+
+        asyncio.create_task(process_pending_task(target_chat_id=chat_id))
+        return
+
+    # --- Intent berat lainnya: Acknowledge First, Process Later (anti 504 webhook) ---
+    # Diproses di background agar webhook balas 200 cepat; hasil dikirim setelah selesai.
+    if intent in HEAVY_BACKGROUND_INTENTS:
         from src.handlers import process_pending_task
         from src.kv import save_pending_task, save_progress_message_id
 
