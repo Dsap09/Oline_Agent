@@ -3387,6 +3387,81 @@ def convert_tools_to_openai_format(tool_declarations: list[dict]) -> list[dict]:
     return openai_tools
 
 
+# Pemetaan tool -> (aksi, fungsi ekstraksi objek) untuk auto-log Neo4j otomatis.
+# Hanya di-log jika hasil tool menandakan sukses (tidak mengandung 'error').
+NEO4J_AUTO_LOG_MAP = {
+    "get_weather_forecast": ("cek cuaca", lambda a: a.get("city") or "cuaca"),
+    "get_stock_price": ("cek saham", lambda a: a.get("ticker") or a.get("symbol") or "saham"),
+    "identify_image_subject": ("analisis gambar", lambda a: a.get("context_hint") or "identifikasi objek"),
+    "analyze_image": ("analisis gambar", lambda a: a.get("question") or "deskripsi gambar"),
+    "save_note_to_notion": ("simpan catatan", lambda a: a.get("title") or "catatan"),
+    "save_memory_to_notion": ("simpan memori", lambda a: a.get("title") or "memori"),
+    "upload_to_drive": ("simpan file", lambda a: (a.get("folder_name") or "Database Oline")),
+    "search_internet": ("cari info", lambda a: a.get("query") or "info"),
+    "preview_with_codepen": ("buat preview", lambda a: a.get("title") or "landing page"),
+    "deploy_to_vercel": ("deploy", lambda a: a.get("project_name") or "landing page"),
+    "get_nearby_places": ("cari tempat", lambda a: a.get("category") or "tempat"),
+    "search_places_by_city": ("cari tempat", lambda a: a.get("city") or "tempat"),
+}
+
+
+def _hasil_tool_sukses(result) -> bool:
+    """Menentukan apakah hasil tool menandakan sukses (bukan error)."""
+    if isinstance(result, dict):
+        if result.get("status") == "error":
+            return False
+        if result.get("error"):
+            return False
+        if result.get("status") == "success":
+            return True
+        return True
+    if isinstance(result, str):
+        if result.lower().startswith("error") or "gagal" in result.lower():
+            return False
+        return bool(result.strip())
+    return result is not None
+
+
+async def _notify_neo4j_failure(chat_id: int, func_name: str) -> None:
+    """Melaporkan kegagalan auto-log Neo4j ke user (di-dedup per chat, 10 menit)."""
+    try:
+        from src.kv import get_cache, set_cache
+        dedup_key = f"neo4j_fail_notif:{chat_id}"
+        if await get_cache(dedup_key):
+            return
+        await set_cache(dedup_key, "1", ttl_seconds=600)
+        from src.handlers import send_telegram_message
+        await send_telegram_message(
+            chat_id,
+            "⚠️ Pencatatan aktivitas ke graph Neo4j gagal (koneksi/penyimpanan). "
+            "Fitur lain tetap aman, tapi riwayat graph mungkin belum lengkap.",
+        )
+        logger.info("[Neo4j] Notifikasi kegagalan dikirim ke chat %s (tool %s)", chat_id, func_name)
+    except Exception as e:
+        logger.warning("Gagal kirim notifikasi Neo4j: %s", str(e))
+
+
+async def _auto_log_neo4j(chat_id: int, func_name: str, args: dict, result) -> None:
+    """Auto-log aktivitas ke Neo4j setelah tool sukses, dengan log eksplisit & pelaporan gagal."""
+    if not chat_id or chat_id == 0 or func_name not in NEO4J_AUTO_LOG_MAP:
+        return
+    if not _hasil_tool_sukses(result):
+        return
+    aksi, objek_fn = NEO4J_AUTO_LOG_MAP[func_name]
+    try:
+        objek = objek_fn(args) if callable(objek_fn) else str(objek_fn)
+    except Exception:
+        objek = "unknown"
+
+    from src.neo4j_client import auto_log_aktivitas
+    status = await auto_log_aktivitas(chat_id, aksi, objek)
+    if status.get("success"):
+        logger.info("[Neo4j] Auto-log OK (tool %s): %s", func_name, status.get("message"))
+    else:
+        logger.warning("[Neo4j] Auto-log GAGAL (tool %s): %s", func_name, status.get("reason"))
+        await _notify_neo4j_failure(chat_id, func_name)
+
+
 async def execute_tool(
     func_name: str, func_args: dict, chat_id: int = 0
 ) -> dict[str, Any]:
@@ -3450,7 +3525,9 @@ async def execute_tool(
     elif func_name == "get_nearby_places":
         return await executor(chat_id=chat_id, **args)
     elif func_name in ("upload_to_drive", "download_from_drive", "search_and_send_image"):
-        return await executor(chat_id=chat_id, **args)
+        result = await executor(chat_id=chat_id, **args)
+        await _auto_log_neo4j(chat_id, func_name, args, result)
+        return result
     elif func_name in ("simpan_aktivitas_neo4j", "cari_aktivitas_neo4j"):
         return await executor(chat_id=chat_id, **args)
     else:
@@ -3482,17 +3559,7 @@ async def execute_tool(
             except Exception as cp_err:
                 logger.warning("Failed to update checkpoint data in execute_tool: %s", str(cp_err))
 
-        if isinstance(result, dict) and result.get("status") == "success":
-            try:
-                from src.neo4j_client import auto_log_aktivitas
-                if func_name == "deploy_to_vercel" and result.get("result_code") == "SUKSES":
-                    await auto_log_aktivitas(chat_id, "deploy", args.get("project_name", "unknown"))
-                elif func_name == "preview_with_codepen":
-                    await auto_log_aktivitas(chat_id, "preview", args.get("title", "unknown"))
-                elif func_name in ("save_note_to_notion", "save_memory_to_notion"):
-                    await auto_log_aktivitas(chat_id, "simpan catatan", args.get("title", "unknown"))
-            except Exception as auto_log_err:
-                logger.warning("Auto-log Neo4j gagal (non-critical): %s", str(auto_log_err))
+        await _auto_log_neo4j(chat_id, func_name, args, result)
         return result
 
 

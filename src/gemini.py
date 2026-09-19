@@ -433,6 +433,15 @@ async def chat_with_oline(
 
         tool_declarations = get_tools_for_intent(intent)
 
+        # Verifikasi koneksi Neo4j di awal request slow path (background, non-blocking)
+        # agar status graph diketahui & cache koneksi hangat untuk auto-log.
+        if jalur == "tools":
+            try:
+                from src.neo4j_client import cek_koneksi_neo4j
+                asyncio.create_task(cek_koneksi_neo4j())
+            except Exception as conn_err:
+                logger.warning("Gagal memicu cek koneksi Neo4j: %s", str(conn_err))
+
         try:
             from src.handlers import call_model_with_fallback
             fallback_response = await call_model_with_fallback(
