@@ -912,6 +912,14 @@ async def handle_file_message(
         )
         return
 
+    # Batasi ukuran file agar tidak melebihi batas payload Vercel (~4.5 MB)
+    MAX_SIZE = 4 * 1024 * 1024  # 4 MB
+    if len(file_bytes) > MAX_SIZE:
+        await update.effective_chat.send_message(
+            "Fotonya kegedean, kirim sebagai file ya~ (maksimal 4 MB)"
+        )
+        return
+
     caption = (update.message.caption or "").strip()
 
     # Jika foto dan bukan permintaan simpan ke drive secara eksplisit, gunakan Moondream VLM
