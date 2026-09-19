@@ -11,15 +11,9 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-_driver = None
 
-
-def _get_driver():
-    """Lazy init Neo4j driver. Returns None jika env vars belum diset."""
-    global _driver
-    if _driver is not None:
-        return _driver
-
+def _create_driver():
+    """Membuat koneksi Neo4j driver baru. Returns None jika env vars belum diset."""
     uri = os.environ.get("NEO4J_URI", "").strip()
     user = os.environ.get("NEO4J_USER", "neo4j").strip()
     password = os.environ.get("NEO4J_PASSWORD", "").strip()
@@ -33,25 +27,44 @@ def _get_driver():
 
     try:
         from neo4j import GraphDatabase
-        _driver = GraphDatabase.driver(uri, auth=(user, password))
+        driver = GraphDatabase.driver(uri, auth=(user, password))
         logger.info("Neo4j driver berhasil diinisialisasi: %s", uri)
-        return _driver
+        return driver
     except Exception as e:
         logger.error("Gagal menginisialisasi Neo4j driver: %s", str(e))
         return None
 
 
+def _close_driver(driver) -> None:
+    """Menutup driver Neo4j dengan aman (mencegah kebocoran koneksi di serverless)."""
+    if driver is None:
+        return
+    try:
+        driver.close()
+    except Exception as e:
+        logger.warning("Gagal menutup driver Neo4j: %s", str(e))
+
+
+def _get_driver():
+    """
+    Membuat koneksi driver baru per pemanggilan (aman untuk serverless).
+    Tidak menyimpan singleton lintas-request agar tidak terikat ke event loop
+    yang sudah ditutup saat instance dibekukan (RuntimeError: Event loop is closed).
+    """
+    return _create_driver()
+
+
 def _simpan_aktivitas_sync(user_id: str, aksi: str, objek: str, waktu: str) -> bool:
     """Synchronous: Simpan aktivitas ke Neo4j graph."""
-    driver = _get_driver()
-    if not driver:
-        return False
-
     query = """
     MERGE (u:User {id: $user_id})
     CREATE (a:Aktivitas {aksi: $aksi, objek: $objek, waktu: $waktu})
     MERGE (u)-[:MELAKUKAN]->(a)
     """
+    driver = _create_driver()
+    if not driver:
+        return False
+
     try:
         with driver.session() as session:
             session.run(query, user_id=user_id, aksi=aksi, objek=objek, waktu=waktu)
@@ -59,20 +72,22 @@ def _simpan_aktivitas_sync(user_id: str, aksi: str, objek: str, waktu: str) -> b
     except Exception as e:
         logger.error("Gagal menyimpan aktivitas ke Neo4j: %s", str(e))
         return False
+    finally:
+        _close_driver(driver)
 
 
 def _cari_aktivitas_sync(user_id: str, limit: int = 50) -> list[dict]:
     """Synchronous: Cari aktivitas terakhir dari user di Neo4j graph."""
-    driver = _get_driver()
-    if not driver:
-        return []
-
     query = """
     MATCH (u:User {id: $user_id})-[:MELAKUKAN]->(a:Aktivitas)
     RETURN a.aksi AS aksi, a.objek AS objek, a.waktu AS waktu
     ORDER BY a.waktu DESC
     LIMIT $limit
     """
+    driver = _create_driver()
+    if not driver:
+        return []
+
     try:
         with driver.session() as session:
             result = session.run(query, user_id=user_id, limit=limit)
@@ -83,6 +98,8 @@ def _cari_aktivitas_sync(user_id: str, limit: int = 50) -> list[dict]:
     except Exception as e:
         logger.error("Gagal membaca aktivitas dari Neo4j: %s", str(e))
         return []
+    finally:
+        _close_driver(driver)
 
 
 async def simpan_aktivitas(user_id: str, aksi: str, objek: str, waktu: Optional[str] = None) -> bool:

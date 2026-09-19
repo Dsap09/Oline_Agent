@@ -106,7 +106,7 @@ async def check_neo4j() -> bool:
         return False
 
     try:
-        from src.neo4j_client import _get_driver
+        from src.neo4j_client import _close_driver, _get_driver
         driver = await asyncio.to_thread(_get_driver)
         if not driver:
             return False
@@ -115,7 +115,10 @@ async def check_neo4j() -> bool:
             with driver.session() as session:
                 res = session.run("RETURN 1 AS num")
                 return res.single()["num"] == 1
-        return await asyncio.to_thread(_verify)
+        try:
+            return await asyncio.to_thread(_verify)
+        finally:
+            await asyncio.to_thread(_close_driver, driver)
     except Exception as e:
         logger.warning("HealthCheck Neo4j error: %s", str(e))
         return False
