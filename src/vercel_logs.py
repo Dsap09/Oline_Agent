@@ -110,8 +110,8 @@ async def fetch_vercel_logs(limit: int = 10, level: Optional[str] = None) -> str
         else:
             raw_msg = str(payload)
 
-        if not raw_msg and ev.get("message"):
-            raw_msg = ev.get("message")
+        if not raw_msg:
+            raw_msg = ev.get("text") or ev.get("message") or ""
 
         message = str(raw_msg)[:250].replace("\n", " ")
         if message.strip():
