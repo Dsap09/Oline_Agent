@@ -40,6 +40,17 @@ def run_async(coro):
 
 async def _process_update(update_data: dict) -> None:
     """Proses Telegram update melalui bot application."""
+    # Deduplikasi update_id: cegah respons ganda saat Telegram re-deliver update yang sama
+    update_id = update_data.get("update_id")
+    if update_id:
+        try:
+            from src.kv import is_duplicate_update
+            if await is_duplicate_update(update_id):
+                logger.info("Update %s sudah diproses (duplicate), dilewati.", update_id)
+                return
+        except Exception as dedup_err:
+            logger.warning("Gagal cek duplicate update %s: %s", update_id, str(dedup_err))
+
     app = create_application()
     async with app:
         update = Update.de_json(update_data, app.bot)

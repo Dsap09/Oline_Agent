@@ -838,6 +838,8 @@ async def handle_message(
     # Kirim respons (split jika terlalu panjang)
     from src.utils import clean_tool_call_text
     response = clean_tool_call_text(response)
+    logger.info("[SEND] chat_id=%s, intent=%s, resp_len=%s, resp_head=%r",
+                chat_id, intent, len(response), response[:60])
     if len(response) > 4096:
         # Telegram max 4096 chars per pesan
         for i in range(0, len(response), 4096):

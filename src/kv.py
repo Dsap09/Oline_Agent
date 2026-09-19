@@ -468,6 +468,22 @@ async def set_cache(key: str, value: str, ttl_seconds: int = 600) -> bool:
     return result is not None
 
 
+async def is_duplicate_update(update_id) -> bool:
+    """
+    Menandai update Telegram yang sudah diproses untuk mencegah respons ganda
+    akibat webhook Telegram re-deliver / retry update yang sama.
+    Mengembalikan True jika update_id sudah pernah diproses dalam 120 detik terakhir.
+    """
+    if not update_id:
+        return False
+    key = f"processed_update:{update_id}"
+    res = await _kv_request(["GET", key])
+    if res and res.get("result"):
+        return True
+    await _kv_request(["SET", key, "1", "EX", "120"])
+    return False
+
+
 async def del_cache(key: str) -> bool:
     """
     Menghapus nilai cache dari Vercel KV.
