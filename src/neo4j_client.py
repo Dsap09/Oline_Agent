@@ -55,11 +55,20 @@ def _get_driver():
 
 
 def _simpan_aktivitas_sync(user_id: str, aksi: str, objek: str, waktu: str) -> bool:
-    """Synchronous: Simpan aktivitas ke Neo4j graph."""
+    """Synchronous: Simpan aktivitas ke Neo4j sebagai graph.
+
+    Struktur graph:
+        (User)-[:MELAKUKAN]->(Action)-[:TERHADAP]->(Object)
+                            Action-[:PADA_WAKTU]->(Time)
+    """
     query = """
     MERGE (u:User {id: $user_id})
-    CREATE (a:Aktivitas {aksi: $aksi, objek: $objek, waktu: $waktu})
+    MERGE (o:Object {nama: $objek})
+    CREATE (a:Action {nama: $aksi, waktu: $waktu})
+    CREATE (t:Time {timestamp: $waktu})
     MERGE (u)-[:MELAKUKAN]->(a)
+    MERGE (a)-[:TERHADAP]->(o)
+    MERGE (a)-[:PADA_WAKTU]->(t)
     """
     driver = _create_driver()
     if not driver:
@@ -79,8 +88,8 @@ def _simpan_aktivitas_sync(user_id: str, aksi: str, objek: str, waktu: str) -> b
 def _cari_aktivitas_sync(user_id: str, limit: int = 50) -> list[dict]:
     """Synchronous: Cari aktivitas terakhir dari user di Neo4j graph."""
     query = """
-    MATCH (u:User {id: $user_id})-[:MELAKUKAN]->(a:Aktivitas)
-    RETURN a.aksi AS aksi, a.objek AS objek, a.waktu AS waktu
+    MATCH (u:User {id: $user_id})-[:MELAKUKAN]->(a:Action)-[:TERHADAP]->(o:Object)
+    RETURN a.nama AS aksi, o.nama AS objek, a.waktu AS waktu
     ORDER BY a.waktu DESC
     LIMIT $limit
     """
