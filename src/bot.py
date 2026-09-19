@@ -769,7 +769,7 @@ async def handle_message(
 
     # --- Async Landing Page Path (Anti Gantung & Notifikasi Progres Satu Pesan) ---
     if is_landing_page_generation_request(user_message, intent):
-        from src.handlers import process_pending_task
+        from src.handlers import delegate_to_worker, process_pending_task
         from src.kv import save_pending_task, save_progress_message_id
 
         # Kirim SATU pesan progres awal sesuai brief.md
@@ -781,16 +781,29 @@ async def handle_message(
         if msg_id:
             await save_progress_message_id(chat_id, msg_id)
 
+        # Simpan pending task (ditandai delegated agar cron /api/process_pending tidak memproses ulang)
         await save_pending_task(
             chat_id=chat_id,
             user_message=user_message,
             intent=intent,
             user_name=user_name,
             message_id=msg_id,
+            delegated=True,
         )
 
-        # Jalankan pemrosesan background secara instan jika event loop berjalan
-        asyncio.create_task(process_pending_task(target_chat_id=chat_id))
+        # Delegate ke Render worker; fallback ke proses lokal bila Render down
+        delegated = await delegate_to_worker(chat_id, user_message, intent, user_name, msg_id)
+        if not delegated:
+            logger.warning("Delegate ke Render gagal; fallback proses lokal chat=%s", chat_id)
+            await save_pending_task(
+                chat_id=chat_id,
+                user_message=user_message,
+                intent=intent,
+                user_name=user_name,
+                message_id=msg_id,
+                delegated=False,
+            )
+            asyncio.create_task(process_pending_task(target_chat_id=chat_id))
         return
 
     # --- Akademik (ERINE): Acknowledge First, Process Later (brief.md) ---

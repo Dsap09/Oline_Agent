@@ -16,6 +16,14 @@
     {
       "src": "api/token_check.py",
       "use": "@vercel/python"
+    },
+    {
+      "src": "api/delegate.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "api/callback.py",
+      "use": "@vercel/python"
     }
   ],
   "routes": [
@@ -30,6 +38,14 @@
     {
       "src": "^/api/token_check/?$",
       "dest": "/api/token_check.py"
+    },
+    {
+      "src": "^/api/delegate/?$",
+      "dest": "/api/delegate.py"
+    },
+    {
+      "src": "^/api/callback/?$",
+      "dest": "/api/callback.py"
     },
     {
       "src": "^/(.*)$",

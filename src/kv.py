@@ -681,11 +681,15 @@ async def save_pending_task(
     user_name: str = "Teman",
     error_reason: str = "",
     message_id: Optional[int] = None,
+    delegated: bool = False,
 ) -> bool:
     """
     Menyimpan perintah yang gagal/pending dieksekusi ke KV untuk dicoba ulang nanti.
     Hanya menyimpan 1 pending task per user (overwrite yang lama).
     TTL 1 jam (3600 detik).
+
+    delegated=True menandakan task sedang/sudah dilimpahkan ke Render worker,
+    sehingga process_pending_task di Vercel akan melewatkannya (skip).
     """
     key = f"{PENDING_TASK_PREFIX}:{chat_id}"
     safe_error = str(error_reason)[:200] if error_reason else ""
@@ -696,6 +700,7 @@ async def save_pending_task(
         "user_name": user_name,
         "error_reason": safe_error,
         "message_id": message_id,
+        "delegated": bool(delegated),
         "waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "retry_count": 0,

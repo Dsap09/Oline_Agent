@@ -51,6 +51,46 @@ async def send_telegram_message(chat_id: int, text: str) -> bool:
         return False
 
 
+async def delegate_to_worker(
+    chat_id: int,
+    perintah: str,
+    intent: str,
+    user_name: str = "Teman",
+    message_id: Optional[int] = None,
+) -> bool:
+    """
+    Melimpahkan task berat ke Render worker (POST /process).
+    Hanya hand-off dengan timeout pendek; hasil dikirim worker langsung ke Telegram.
+    Mengembalikan True jika worker menerima task (HTTP 200/202).
+    """
+    worker_url = os.environ.get("RENDER_WORKER_URL", "").strip().rstrip("/")
+    worker_key = os.environ.get("OLINE_WORKER_KEY", "").strip()
+    if not worker_url or not worker_key:
+        logger.warning("RENDER_WORKER_URL / OLINE_WORKER_KEY belum diset; tidak bisa delegate.")
+        return False
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{worker_url}/process",
+                json={
+                    "chat_id": chat_id,
+                    "perintah": perintah,
+                    "intent": intent,
+                    "user_name": user_name,
+                    "message_id": message_id,
+                },
+                headers={"X-Worker-Key": worker_key},
+            )
+            ok = resp.status_code in (200, 202)
+            logger.info("Delegate ke Render: chat=%s intent=%s status=%s", chat_id, intent, resp.status_code)
+            return ok
+    except Exception as e:
+        logger.warning("Gagal delegate ke Render: %s", str(e))
+        return False
+
+
 async def update_progress(chat_id: int, message_id: int, text: str) -> bool:
     """
     Memperbarui isi dari SATU pesan progres Telegram menggunakan edit_message_text.
@@ -140,6 +180,12 @@ async def process_pending_task(target_chat_id: Optional[int] = None) -> dict[str
         msg_id = task.get("message_id") or await get_progress_message_id(chat_id)
 
         if not chat_id or not perintah:
+            continue
+
+        # Task yang sudah dilimpahkan ke Render worker diproses di sana,
+        # bukan di Vercel (hindari duplikasi oleh cron /api/process_pending).
+        if task.get("delegated"):
+            logger.info("Skip task chat_id %s (delegated ke Render worker).", chat_id)
             continue
 
         logger.info(
