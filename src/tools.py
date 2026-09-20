@@ -5,6 +5,7 @@ cuaca (OpenWeatherMap), dan jurnal harian (Vercel KV).
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import math
@@ -2064,7 +2065,7 @@ async def execute_code(language: str, code: str) -> dict[str, Any]:
 
 
 async def deploy_to_vercel(
-    project_name: str, files: list[dict[str, Any]], is_update: bool = False
+    project_name: str = "", files=None, is_update: bool = False
 ) -> dict[str, Any]:
     """
     Mendeploy file statis (HTML, CSS, JS) ke Vercel via REST API v13.
@@ -2403,7 +2404,7 @@ async def search_and_send_image(
 
 
 async def preview_with_codepen(
-    title: str, html: str, css: str = "", js: str = ""
+    title: str = "", html: str = "", css: str = "", js: str = ""
 ) -> dict[str, Any]:
     """
     Mengunggah kode HTML/CSS/JS ke JSFiddle / CodePen Preview Service
@@ -3462,6 +3463,48 @@ async def _auto_log_neo4j(chat_id: int, func_name: str, args: dict, result) -> N
         await _notify_neo4j_failure(chat_id, func_name)
 
 
+def _normalize_tool_args(executor, args: dict) -> dict:
+    """Isi parameter tool yang hilang dengan nilai default-nya.
+
+    Model (Gemini/DeepInfra/Groq/dll) kadang mengeluarkan tool call dengan
+    argumen tidak lengkap. Dengan mengisi default bawaan fungsi, panggilan
+    yang seharusnya valid tidak lagi gagal karena TypeError.
+    Parameter required tanpa default dibiarkan (akan ditangkap & ditangani
+    oleh _run_executor_safe).
+    """
+    try:
+        sig = inspect.signature(executor)
+        for name, param in sig.parameters.items():
+            if name in args:
+                continue
+            if param.default is not inspect.Parameter.empty:
+                args[name] = param.default
+    except (TypeError, ValueError):
+        pass
+    return args
+
+
+async def _run_executor_safe(executor, args: dict) -> dict[str, Any]:
+    """Jalankan executor dengan normalisasi argumen & penanganan error defensif."""
+    normalized = _normalize_tool_args(executor, args)
+    try:
+        return await executor(**normalized)
+    except TypeError as e:
+        logger.warning(
+            "Tool %s gagal (argumen tidak lengkap): %s",
+            getattr(executor, "__name__", "?"),
+            str(e),
+        )
+        return {"status": "error", "error": f"ERROR: Argumen tool tidak lengkap: {str(e)}"}
+    except Exception as e:
+        logger.error(
+            "Tool %s gagal: %s",
+            getattr(executor, "__name__", "?"),
+            str(e),
+        )
+        return {"status": "error", "error": f"ERROR: {str(e)}"}
+
+
 async def execute_tool(
     func_name: str, func_args: dict, chat_id: int = 0
 ) -> dict[str, Any]:
@@ -3523,7 +3566,7 @@ async def execute_tool(
     elif func_name == "send_voice_message":
         return await executor(chat_id=chat_id, text=args.get("text", ""))
     elif func_name == "get_nearby_places":
-        return await executor(chat_id=chat_id, **args)
+        return await _run_executor_safe(executor, {"chat_id": chat_id, **args})
     elif func_name in ("upload_to_drive", "download_from_drive", "search_and_send_image"):
         result = await executor(chat_id=chat_id, **args)
         await _auto_log_neo4j(chat_id, func_name, args, result)
@@ -3531,7 +3574,7 @@ async def execute_tool(
     elif func_name in ("simpan_aktivitas_neo4j", "cari_aktivitas_neo4j"):
         return await executor(chat_id=chat_id, **args)
     else:
-        result = await executor(**args)
+        result = await _run_executor_safe(executor, args)
         # Auto-log aktivitas penting ke Neo4j & update Task Checkpoint data
         if chat_id and chat_id != 0:
             try:
