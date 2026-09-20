@@ -258,6 +258,8 @@ HEAVY_KEYWORDS = {
         "buatkan web", "bikin web", "buat landing page",
         "landing page", "website untuk", "halaman untuk", "buat website",
         "lanjutkan pembuatan", "lanjutkan preview", "lanjutkan landing", "lanjutkan web",
+        "aplikasi", "buat aplikasi", "bikin aplikasi", "buatkan aplikasi",
+        "to do list", "todo list", "kalkulator", "aplikasi web", "buat app", "bikin app",
     ],
     "lokasi": [
         "terdekat", "dekat", "toko buku", "cafe", "kafe", "restoran", "restaurant",
@@ -555,7 +557,14 @@ def is_landing_page_generation_request(text: str, intent: str | None) -> bool:
         return False
 
     text_lower = text.lower().strip()
-    if any(kw in text_lower for kw in ["list", "daftar", "hapus", "delete"]):
+    # Hanya blokir perintah LISTING/DELETE deployment (fast path), bukan kata 'list'
+    # di nama aplikasi seperti "to do list". Gunakan frasa spesifik deployment.
+    if any(kw in text_lower for kw in [
+        "list landing", "list deployment", "list website", "daftar landing",
+        "daftar deployment", "daftar website", "hapus landing", "hapus deployment",
+        "hapus website", "delete landing", "delete deployment", "delete website",
+        "list web", "daftar web", "hapus web",
+    ]):
         return False
 
     return True
