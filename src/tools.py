@@ -35,7 +35,9 @@ from src.kv import (
 # untuk mengurangi cold start time pada Vercel serverless.
 from src.github_tools import (
     create_github_branch,
+    create_github_preview,
     create_pull_request,
+    delete_github_branch,
     read_github_file,
     update_github_file,
 )
@@ -612,6 +614,23 @@ TOOL_DECLARATIONS = [
         },
     },
     {
+        "name": "delete_github_preview",
+        "description": (
+            "Menghapus branch preview landing page di GitHub (yang dibuat oleh preview_with_codepen) "
+            "setelah landing page selesai di-deploy atau tidak dibutuhkan lagi, agar repo tetap bersih."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Nama branch preview yang ingin dihapus, misal 'preview/hana-kohi-1726812345'.",
+                },
+            },
+            "required": ["branch"],
+        },
+    },
+    {
         "name": "search_and_send_image",
         "description": (
             "Mencari gambar di internet dan mengirimkannya langsung sebagai foto ke chat Telegram. "
@@ -884,11 +903,12 @@ TOOLS_BY_INTENT = {
     "lokasi": ["get_nearby_places", "search_places_by_city"],
     "coding": ["execute_code", "read_vercel_logs"],
     "notion": ["save_note_to_notion", "save_memory_to_notion", "add_notion_property", "check_notion_databases"],
-    "preview": ["preview_with_codepen", "search_design_reference"],
+    "preview": ["preview_with_codepen", "search_design_reference", "delete_github_preview"],
     "deploy": [
         "deploy_to_vercel",
         "list_vercel_deployments",
         "delete_vercel_deployment",
+        "delete_github_preview",
     ],
     "gambar": ["search_and_send_image"],
     "neo4j": ["simpan_aktivitas_neo4j", "cari_aktivitas_neo4j"],
@@ -1277,7 +1297,10 @@ def format_quota_report(usage_data: dict) -> str:
             terpakai_str = f"{req} request"
 
         sisa_str = hitung_sisa(provider, terpakai_val)
-        status = "✅ Aman" if "0 token" not in sisa_str and "0 request" not in sisa_str else "❌ Habis"
+        if limit_type == "saldo":
+            status = "❌ Habis" if sisa_str in ("$0.00", "$0.0", "$0") else "✅ Aman"
+        else:
+            status = "❌ Habis" if sisa_str.startswith("0 ") else "✅ Aman"
 
         lines.append(f"{label}")
         lines.append(f"   Terpakai: {terpakai_str}")
@@ -2530,10 +2553,17 @@ async def preview_with_codepen(
     except Exception as cp_err:
         logger.warning("CodePen prefill API failed: %s", str(cp_err))
 
+    # 3. Fallback Engine: GitHub Preview (branch terpisah, bisa dihapus bersih)
+    # Dipakai saat JSFiddle/CodePen tidak tersedia (API berubah / diblokir).
+    gh = await create_github_preview(title=clean_title, html=clean_html, css=clean_css, js=clean_js, slug=clean_title)
+    if gh.get("status") == "success" and gh.get("url"):
+        logger.info("GitHub preview berhasil dibuat: %s", gh.get("url"))
+        return gh
+
     return {
         "status": "error",
         "result_code": "ERROR",
-        "error": "ERROR: Gagal membuat link preview di JSFiddle dan CodePen.",
+        "error": f"ERROR: Gagal membuat link preview (JSFiddle, CodePen, & GitHub). Detail: {gh.get('error', '')}",
         "url": None,
     }
 
@@ -3345,6 +3375,7 @@ TOOL_EXECUTORS = {
     "add_notion_property": _lazy_add_notion_property,
     "preview_with_codepen": preview_with_codepen,
     "deploy_to_vercel": deploy_to_vercel,
+    "delete_github_preview": delete_github_branch,
     "list_vercel_deployments": list_vercel_deployments,
     "delete_vercel_deployment": delete_vercel_deployment,
     "search_and_send_image": search_and_send_image,
@@ -3588,6 +3619,8 @@ async def execute_tool(
                         cp_data["js"] = args.get("js")
                         if isinstance(result, dict) and result.get("url"):
                             cp_data["preview_url"] = result.get("url")
+                            if result.get("branch"):
+                                cp_data["preview_branch"] = result.get("branch")
                         elif isinstance(result, str) and "http" in result:
                             cp_data["preview_url"] = result
                         if "preview" not in cp.get("langkah_selesai", []):
@@ -3597,6 +3630,15 @@ async def execute_tool(
                             cp_data["deploy_url"] = result.get("url")
                         if "deploy" not in cp.get("langkah_selesai", []):
                             cp["langkah_selesai"].append("deploy")
+                        # Bersihkan branch preview GitHub setelah deploy berhasil
+                        if (
+                            isinstance(result, dict)
+                            and result.get("status") == "success"
+                            and cp_data.get("preview_branch")
+                        ):
+                            _pbranch = cp_data.pop("preview_branch", None)
+                            asyncio.create_task(delete_github_branch(_pbranch))
+                            logger.info("Preview branch %s akan dihapus setelah deploy.", _pbranch)
                     cp["data"] = cp_data
                     await save_checkpoint(chat_id, cp)
             except Exception as cp_err:

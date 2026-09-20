@@ -5,6 +5,8 @@ Memungkinkan Oline membaca file, membuat branch, mengedit kode, dan membuat Pull
 
 import logging
 import os
+import re
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -138,6 +140,114 @@ async def create_pull_request(
         err_str = str(e)
         logger.error("Failed to create Pull Request for branch '%s': %s", clean_branch, err_str)
         return f"Gagal membuat Pull Request: {err_str}"
+
+
+def _sanitize_slug(name: str) -> str:
+    """Mengubah nama menjadi slug aman untuk nama branch (huruf kecil, dash)."""
+    s = re.sub(r"[^a-z0-9]+", "-", str(name or "").lower()).strip("-")
+    return s or "preview"
+
+
+def _merge_preview_files(html: str, css: str, js: str) -> str:
+    """Menggabungkan HTML/CSS/JS menjadi satu file index.html untuk preview."""
+    combined = html or ""
+    if css:
+        style = f"<style>{css}</style>"
+        if "</head>" in combined:
+            combined = combined.replace("</head>", f"{style}</head>")
+        else:
+            combined = f"{style}\n{combined}"
+    if js:
+        script = f"<script>{js}</script>"
+        if "</body>" in combined:
+            combined = combined.replace("</body>", f"{script}</body>")
+        else:
+            combined = f"{combined}\n{script}"
+    return combined
+
+
+async def create_github_preview(
+    title: str, html: str, css: str = "", js: str = "", slug: str = "preview"
+) -> dict:
+    """
+    Membuat preview landing page via GitHub (branch terpisah) dan mengembalikan
+    URL preview yang bisa dibuka publik via htmlpreview.
+
+    Preview diletakkan di branch 'preview/<slug>-<timestamp>' agar tidak
+    mengganggu 'main', dan bisa dihapus bersih dengan delete_github_branch.
+    """
+    token, owner, repo_name = _get_github_credentials()
+    if not token or not owner or not repo_name:
+        return {
+            "status": "error",
+            "error": "ERROR: GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO belum dikonfigurasi.",
+            "url": None,
+        }
+
+    try:
+        from github import Github
+
+        g = Github(token)
+        repo = g.get_repo(f"{owner}/{repo_name}")
+
+        branch = f"preview/{_sanitize_slug(slug)}-{int(time.time())}"
+        combined = _merge_preview_files(html or "", css or "", js or "")
+        if not combined.strip():
+            return {"status": "error", "error": "ERROR: Kode HTML kosong.", "url": None}
+
+        src = repo.get_branch("main")
+        repo.create_git_ref(ref=f"refs/heads/{branch}", sha=src.commit.sha)
+        repo.create_file(
+            path="index.html",
+            message=f"preview: {title}",
+            content=combined,
+            branch=branch,
+        )
+
+        preview_url = (
+            f"https://htmlpreview.github.io/?https://github.com/"
+            f"{owner}/{repo_name}/blob/{branch}/index.html"
+        )
+        return {
+            "status": "success",
+            "result_code": "SUKSES",
+            "url": preview_url,
+            "branch": branch,
+            "message": f"SUKSES: Preview siap! Buka link ini untuk melihat: {preview_url}",
+        }
+    except Exception as e:
+        logger.error("Error creating GitHub preview: %s", str(e))
+        return {"status": "error", "error": f"ERROR: Gagal membuat preview GitHub: {str(e)}", "url": None}
+
+
+async def delete_github_branch(branch_name: str) -> str:
+    """
+    Menghapus branch preview di GitHub (refs/heads/<branch>) secara bersih.
+    Dipakai untuk membersihkan preview setelah landing page di-deploy.
+    """
+    token, owner, repo_name = _get_github_credentials()
+    if not token or not owner or not repo_name:
+        return "GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO belum dikonfigurasi."
+
+    clean_branch = (branch_name or "").strip().lstrip("refs/heads/")
+    if not clean_branch:
+        return "Nama branch tidak valid."
+
+    try:
+        from github import Github
+
+        g = Github(token)
+        repo = g.get_repo(f"{owner}/{repo_name}")
+        ref = repo.get_git_ref(f"heads/{clean_branch}")
+        ref.delete()
+        logger.info("Branch preview '%s' berhasil dihapus.", clean_branch)
+        return f"Branch preview '{clean_branch}' berhasil dihapus."
+    except Exception as e:
+        err = str(e)
+        if "404" in err or "Not Found" in err:
+            return f"Branch preview '{clean_branch}' sudah tidak ada (sudah dihapus)."
+        logger.error("Gagal menghapus branch preview '%s': %s", clean_branch, err)
+        return f"Gagal menghapus branch preview '{clean_branch}': {err}"
 
 
 async def ai_fix_code(current_code: str, error_desc: str) -> str:

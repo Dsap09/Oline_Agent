@@ -256,6 +256,8 @@ HEAVY_KEYWORDS = {
         "buatkan website", "buatkan landing page", "buat web", "bikin website",
         "bikin landing page", "preview", "buat halaman", "desain web", "desain website",
         "buatkan web", "bikin web", "buat landing page",
+        "landing page", "website untuk", "halaman untuk", "buat website",
+        "lanjutkan pembuatan", "lanjutkan preview", "lanjutkan landing", "lanjutkan web",
     ],
     "lokasi": [
         "terdekat", "dekat", "toko buku", "cafe", "kafe", "restoran", "restaurant",
@@ -766,6 +768,26 @@ async def handle_message(
                     f"❌ Gagal menyimpan catatan ke Notion: {result.get('error')}"
                 )
             return
+
+    # --- Kuota AI: jalankan langsung (anti model menjawab generik tanpa list) ---
+    # Kuota dieksekusi imperatif agar SELALU menampilkan rincian list model AI,
+    # tidak diserahkan ke keputusan model yang bisa meringkas menjadi satu baris.
+    if intent == "kuota":
+        try:
+            from src.tools import check_ai_quota
+            from src.kv import save_history
+            report = await check_ai_quota(chat_id)
+            await update.effective_chat.send_message(report)
+            try:
+                history = await get_history(chat_id)
+                history.append({"role": "user", "text": user_message})
+                history.append({"role": "model", "text": report})
+                await save_history(chat_id, history)
+            except Exception as hist_err:
+                logger.warning("Gagal simpan history kuota: %s", str(hist_err))
+            return
+        except Exception as quota_err:
+            logger.error("Gagal eksekusi kuota imperatif: %s", str(quota_err))
 
     # --- Async Landing Page Path (Anti Gantung & Notifikasi Progres Satu Pesan) ---
     if is_landing_page_generation_request(user_message, intent):
