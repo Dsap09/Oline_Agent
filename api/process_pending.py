@@ -13,12 +13,37 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.handlers import process_pending_task
+from src.github_tools import cleanup_old_previews
+from src.kv import get_cache, set_cache
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+async def _run_preview_cleanup_if_due() -> str:
+    """
+    Menjalankan pembersihan branch preview GitHub yang kedaluwarsa (default 7 hari),
+    maksimal SEKALI sehari (dedup via KV) agar tidak boros API GitHub di tiap cron.
+    """
+    try:
+        last = await get_cache("preview_cleanup_last")
+        if last:
+            try:
+                import time
+                if (time.time() - float(last)) < 86400:
+                    return "Skip (sudah dibersihkan hari ini)."
+            except (TypeError, ValueError):
+                pass
+        result = await cleanup_old_previews(days=7)
+        import time
+        await set_cache("preview_cleanup_last", str(time.time()), ttl_seconds=90000)
+        return result
+    except Exception as e:
+        logger.warning("Gagal menjalankan cleanup preview: %s", str(e))
+        return f"Gagal cleanup preview: {str(e)}"
 
 
 def run_async(coro):
@@ -61,6 +86,7 @@ def app(environ, start_response):
     try:
         logger.info("Triggering background pending task processor from /api/process_pending...")
         result = run_async(process_pending_task())
+        cleanup_result = run_async(_run_preview_cleanup_if_due())
 
         status = "200 OK"
         response_headers = [
@@ -74,6 +100,7 @@ def app(environ, start_response):
             "bot": "Oline",
             "endpoint": "process_pending",
             "result": result,
+            "preview_cleanup": cleanup_result,
         }, ensure_ascii=False).encode("utf-8")
         return [body]
 

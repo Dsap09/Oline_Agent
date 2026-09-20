@@ -250,6 +250,48 @@ async def delete_github_branch(branch_name: str) -> str:
         return f"Gagal menghapus branch preview '{clean_branch}': {err}"
 
 
+async def cleanup_old_previews(days: int = 7) -> str:
+    """
+    Menghapus semua branch preview GitHub (prefix 'preview/') yang usianya
+    sudah lebih dari `days` hari (berdasarkan timestamp di nama branch).
+    Preview yang dihapus/di-deploy tidak terpengaruh.
+    """
+    token, owner, repo_name = _get_github_credentials()
+    if not token or not owner or not repo_name:
+        return "GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO belum dikonfigurasi."
+
+    cutoff = time.time() - (max(1, int(days)) * 86400)
+    deleted = 0
+    try:
+        from github import Github
+
+        g = Github(token)
+        repo = g.get_repo(f"{owner}/{repo_name}")
+        for branch in repo.get_branches():
+            name = branch.name
+            if not name.startswith("preview/"):
+                continue
+            # Format: preview/<slug>-<epoch> ; ambil epoch di segmen terakhir
+            try:
+                epoch = int(name.rsplit("-", 1)[-1])
+            except ValueError:
+                continue
+            if epoch < cutoff:
+                try:
+                    repo.get_git_ref(f"heads/{name}").delete()
+                    deleted += 1
+                    logger.info("Preview kedaluwarsa dihapus: %s", name)
+                except Exception as e:
+                    logger.warning("Gagal hapus preview kedaluwarsa '%s': %s", name, str(e))
+
+        msg = f"Pembersihan preview selesai: {deleted} branch preview kedaluwarsa (> {days} hari) dihapus."
+        logger.info(msg)
+        return msg
+    except Exception as e:
+        logger.error("Gagal membersihkan preview GitHub: %s", str(e))
+        return f"Gagal membersihkan preview GitHub: {str(e)}"
+
+
 async def ai_fix_code(current_code: str, error_desc: str) -> str:
     """
     Meminta AI (Gemini) untuk memperbaiki kode berdasarkan deskripsi error/diagnosis.

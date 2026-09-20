@@ -1,5 +1,5 @@
 """
-Unit test suite untuk DeepInfra intent routing & JSFiddle preview tool.
+Unit test suite untuk DeepInfra intent routing & GitHub preview tool.
 Jalankan dengan: python -m unittest tests/test_deepinfra_routing.py
 """
 
@@ -85,22 +85,16 @@ class TestDeepInfraRouting(unittest.IsolatedAsyncioTestCase):
         mock_groq_slow.assert_not_called()
         self.assertIn("perintah kamu udah Oline simpan", res)
 
-    @patch("httpx.AsyncClient.post", new_callable=AsyncMock)
-    @patch("httpx.AsyncClient.get", new_callable=AsyncMock)
-    async def test_preview_with_codepen_jsfiddle_success(self, mock_get, mock_post):
-        """Tes preview_with_codepen menghasilkan JSFiddle preview URL dari respons API."""
-        mock_r1 = MagicMock()
-        mock_r1.status_code = 200
-        mock_r1.text = '<form><input name="authenticity_token" value="mock_token"/></form>'
-        mock_get.return_value = mock_r1
-
-        mock_r2 = MagicMock()
-        mock_r2.status_code = 200
-        mock_r2.json.return_value = {
-            "slug": "test1234",
-            "url": "https://jsfiddle.net/test1234/",
+    @patch("src.tools.create_github_preview", new_callable=AsyncMock)
+    async def test_preview_with_codepen_github_success(self, mock_gh):
+        """Tes preview_with_codepen menghasilkan preview URL GitHub (htmlpreview)."""
+        mock_gh.return_value = {
+            "status": "success",
+            "result_code": "SUKSES",
+            "url": "https://htmlpreview.github.io/?https://github.com/Dsap09/Oline_Agent/blob/preview/gym-123/index.html",
+            "branch": "preview/gym-123",
+            "message": "SUKSES: Preview siap!",
         }
-        mock_post.return_value = mock_r2
 
         res = await preview_with_codepen(
             title="Landing Gym",
@@ -111,8 +105,8 @@ class TestDeepInfraRouting(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(res["status"], "success")
         self.assertEqual(res["result_code"], "SUKSES")
-        self.assertEqual(res["url"], "https://jsfiddle.net/test1234/")
-        self.assertIn("https://jsfiddle.net/test1234/", res["message"])
+        self.assertIn("htmlpreview.github.io", res["url"])
+        mock_gh.assert_awaited_once()
 
 
 if __name__ == "__main__":
