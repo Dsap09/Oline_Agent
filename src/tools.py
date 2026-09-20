@@ -2247,7 +2247,7 @@ async def list_vercel_deployments() -> dict[str, Any]:
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get("https://api.vercel.com/v13/deployments", headers=headers)
+            resp = await client.get("https://api.vercel.com/v6/deployments", headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
                 raw_deployments = data.get("deployments", [])

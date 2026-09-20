@@ -14,7 +14,7 @@ from src.kv import get_cache, set_cache
 logger = logging.getLogger(__name__)
 
 VERCEL_API_TOKEN = (os.environ.get("VERCEL_API_TOKEN", "") or os.environ.get("VERCEL_TOKEN", "")).strip()
-VERCEL_DEPLOYMENTS_URL = "https://api.vercel.com/v13/deployments"
+VERCEL_DEPLOYMENTS_URL = "https://api.vercel.com/v6/deployments"
 VERCEL_EVENTS_URL = "https://api.vercel.com/v1/deployments/{deployment_id}/events"
 
 # Pemetaan tipe event Vercel ke level untuk filtering (dilakukan client-side,

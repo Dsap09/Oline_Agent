@@ -16,6 +16,7 @@ VERCEL_API_TOKEN = (os.environ.get("VERCEL_API_TOKEN", "") or os.environ.get("VE
 VERCEL_PROJECTS_URL = "https://api.vercel.com/v9/projects"
 VERCEL_ENV_URL = "https://api.vercel.com/v9/projects/{project_id}/env"
 VERCEL_DEPLOYMENTS_URL = "https://api.vercel.com/v13/deployments"
+VERCEL_DEPLOYMENTS_LIST_URL = "https://api.vercel.com/v6/deployments"
 
 
 def _headers() -> dict:
@@ -32,7 +33,7 @@ async def _get_latest_deployment() -> Optional[dict]:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
-                VERCEL_DEPLOYMENTS_URL, headers=_headers(), params={"limit": 1}
+                VERCEL_DEPLOYMENTS_LIST_URL, headers=_headers(), params={"limit": 1}
             )
             if resp.status_code == 200:
                 deployments = resp.json().get("deployments", [])

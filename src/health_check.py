@@ -28,7 +28,7 @@ async def check_vercel_api() -> bool:
         logger.warning("HealthCheck Vercel: VERCEL_API_TOKEN / VERCEL_TOKEN tidak diset.")
         return False
 
-    url = "https://api.vercel.com/v13/deployments"
+    url = "https://api.vercel.com/v6/deployments"
     headers = {"Authorization": f"Bearer {token}"}
 
     try:
