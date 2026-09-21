@@ -37,23 +37,29 @@ def _event_level(event_type: str) -> str:
 
 async def _get_latest_deployment_id() -> Optional[str]:
     """
-    Mengambil id deployment READY terbaru dari Vercel.
+    Mengambil id deployment READY terbaru dari Vercel untuk PROYEK OLINE saja.
+    Filter hostname URL agar tidak menangkap deployment proyek lain (mis. proyek PHP
+    dengan runtime nodejs18 yang sudah discontinued) yang bisa memicu notifikasi palsu.
     Endpoint v1 events membutuhkan deployment_id (bukan endpoint /v4/runtime-logs yang sudah deprecated/404).
     """
     token = (os.environ.get("VERCEL_API_TOKEN", "") or os.environ.get("VERCEL_TOKEN", "")).strip()
     if not token:
         return None
 
+    # Prefix hostname proyek Oline (dapat ditimpa via env untuk fleksibilitas).
+    oline_prefix = os.environ.get("OLINE_VERCEL_URL_PREFIX", "oline-personal").strip()
+
     headers = {"Authorization": f"Bearer {token}"}
-    params = {"limit": 1, "state": "READY"}
+    params = {"limit": 10, "state": "READY"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(VERCEL_DEPLOYMENTS_URL, headers=headers, params=params)
             if resp.status_code == 200:
                 deployments = resp.json().get("deployments", [])
-                if deployments:
-                    first = deployments[0]
-                    return first.get("uid") or first.get("id")
+                for dep in deployments:
+                    url = dep.get("url") or ""
+                    if url.startswith(oline_prefix):
+                        return dep.get("uid") or dep.get("id")
     except Exception as e:
         logger.warning("Gagal mengambil deployment terbaru Vercel: %s", str(e))
     return None
