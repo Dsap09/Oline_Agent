@@ -112,10 +112,19 @@ async def trigger_process_pending_endpoint() -> bool:
     if not base.startswith("http"):
         base = f"https://{base}"
     url = f"{base}/api/process_pending"
+    # Sertakan secret agar self-trigger lolos gate otorisasi /api/process_pending.
+    headers = {}
+    secret = (
+        os.environ.get("PROCESS_PENDING_SECRET", "").strip()
+        or os.environ.get("KEEPALIVE_SECRET", "").strip()
+    )
+    if secret:
+        headers["X-Process-Pending-Secret"] = secret
+        headers["X-Keepalive-Secret"] = secret
     try:
         import httpx
         async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(url)
+            resp = await client.get(url, headers=headers)
             logger.info("Self-trigger /api/process_pending: status=%s", resp.status_code)
             return resp.status_code == 200
     except Exception as e:
