@@ -5,6 +5,7 @@ Berisi parser tanggal Indonesia dan helper umum.
 
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -118,6 +119,25 @@ def truncate_text(text: str, max_length: int = 500) -> str:
     return text[: max_length - 3] + "..."
 
 
+async def append_elapsed_time(chat_id: int, text: str) -> str:
+    """
+    Menambahkan waktu proses nyata (detik sejak task dimulai) ke teks progres,
+    agar pesan progres mencerminkan progres aktual, bukan estimasi template.
+    """
+    if not text:
+        return text
+    try:
+        from src.kv import get_task_start
+        start = await get_task_start(chat_id)
+        if start:
+            elapsed = int(time.time() - start)
+            if elapsed >= 1:
+                return f"{text} • {elapsed} detik"
+    except Exception:
+        pass
+    return text
+
+
 async def notify_process(
     chat_id: int,
     action: Optional[str] = "typing",
@@ -153,7 +173,7 @@ async def notify_process(
         if not (message and message.strip()):
             return
 
-        text = message.strip()
+        text = await append_elapsed_time(chat_id, message.strip())
 
         # Edit pesan progres yang sudah ada (satu bubble dinamis), bukan kirim baru.
         try:

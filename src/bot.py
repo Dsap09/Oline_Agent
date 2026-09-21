@@ -801,11 +801,14 @@ async def handle_message(
     # --- Async Landing Page Path (Anti Gantung & Notifikasi Progres Satu Pesan) ---
     if is_landing_page_generation_request(user_message, intent):
         from src.handlers import delegate_to_worker
-        from src.kv import save_pending_task, save_progress_message_id
+        from src.kv import save_pending_task, save_progress_message_id, save_task_start
+
+        # Catat waktu mulai task agar pesan progres menampilkan waktu proses nyata.
+        await save_task_start(chat_id)
 
         # Kirim SATU pesan progres awal sesuai brief.md
         progres_msg = await update.effective_chat.send_message(
-            "⏳ Permintaan diterima. Estimasi 30 detik."
+            "⏳ Permintaan diterima, mulai memproses..."
         )
         msg_id = progres_msg.message_id if progres_msg else None
 

@@ -9,7 +9,7 @@ from datetime import datetime
 import json
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from google import genai
 from google.genai import types
@@ -84,8 +84,76 @@ def _build_tools(tool_declarations: list[dict]) -> Optional[list[types.Tool]]:
     return [types.Tool(function_declarations=function_declarations)]
 
 
-async def _build_system_prompt_async(memory: str, user_name: str = "Teman") -> str:
-    """Build system prompt lengkap dengan nama pengguna, memori KV, dan memori Notion."""
+async def _read_grounding_context(chat_id: int) -> str:
+    """
+    Membaca konteks grounding nyata (jurnal 7 hari + aktivitas Neo4j terbaru)
+    dengan cache di KV, lalu menyusun blok teks untuk disisipkan ke system prompt.
+    Mengembalikan string kosong jika tidak ada / gagal (tidak memblokir).
+    """
+    if not chat_id:
+        return ""
+
+    parts = []
+
+    # --- Jurnal terbaru (7 hari) ---
+    try:
+        from src.kv import get_cache, get_journal_entries, set_cache
+        cache_key = f"ctx:journal:{chat_id}"
+        journal_text = ""
+        try:
+            journal_text = await get_cache(cache_key) or ""
+        except Exception:
+            journal_text = ""
+        if not journal_text:
+            entries = await get_journal_entries(chat_id)
+            if entries:
+                lines = [f"- {d}: {entries[d]}" for d in sorted(entries.keys())]
+                journal_text = "\n".join(lines)
+                try:
+                    await set_cache(cache_key, journal_text, ttl_seconds=600)
+                except Exception:
+                    pass
+        if journal_text:
+            parts.append(f"## Jurnal Terbaru (7 hari):\n{journal_text}")
+    except Exception as e:
+        logger.warning("Gagal baca jurnal untuk grounding: %s", str(e))
+
+    # --- Aktivitas Neo4j terbaru ---
+    try:
+        from src.neo4j_client import cari_aktivitas
+        from src.kv import get_cache, set_cache
+        cache_key = f"ctx:neo4j:{chat_id}"
+        act_text = ""
+        try:
+            act_text = await get_cache(cache_key) or ""
+        except Exception:
+            act_text = ""
+        if not act_text:
+            acts = await asyncio.wait_for(cari_aktivitas(chat_id, limit=10), timeout=5.0)
+            if acts:
+                lines = []
+                for a in acts:
+                    waktu = a.get("waktu") or ""
+                    aksi = a.get("aksi") or ""
+                    objek = a.get("objek") or ""
+                    item = f"- {waktu}: {aksi} {objek}".strip()
+                    if item != "- :":
+                        lines.append(item)
+                act_text = "\n".join(lines)
+                try:
+                    await set_cache(cache_key, act_text, ttl_seconds=600)
+                except Exception:
+                    pass
+        if act_text:
+            parts.append(f"## Aktivitas Terakhir (Neo4j):\n{act_text}")
+    except Exception as e:
+        logger.warning("Gagal baca aktivitas Neo4j untuk grounding: %s", str(e))
+
+    return "\n\n".join(parts)
+
+
+async def _build_system_prompt_async(memory: str, user_name: str = "Teman", chat_id: int = 0) -> str:
+    """Build system prompt lengkap dengan nama pengguna, memori KV, memori Notion, dan konteks grounding nyata."""
     if user_name and user_name not in ("Anonim", "Teman"):
         user_info = f"- Nama Pengguna: {user_name} (Sapa pengguna secara ramah dan santai dengan nama {user_name})."
     else:
@@ -112,6 +180,14 @@ async def _build_system_prompt_async(memory: str, user_name: str = "Teman") -> s
                 prompt += f"Preferensi Pengguna:\n{preferensi}\n"
     except Exception as e:
         logger.warning("Error loading Notion memory for prompt: %s", str(e))
+
+    # Konteks grounding nyata (jurnal + aktivitas Neo4j) agar jawaban sesuai data riil
+    try:
+        grounding_ctx = await _read_grounding_context(chat_id)
+        if grounding_ctx:
+            prompt += f"\n\n{grounding_ctx}"
+    except Exception as e:
+        logger.warning("Gagal menambahkan konteks grounding ke prompt: %s", str(e))
 
     return prompt
 
@@ -212,6 +288,39 @@ Format output: langsung tuliskan ringkasan memori tanpa prefix atau label."""
         logger.error("Failed to update memory: %s", str(e))
 
 
+async def _maybe_update_memory(
+    chat_id: int, user_message: str, bot_response: str, current_memory: str
+) -> None:
+    """
+    Update memori otomatis dengan throttle (maks sekali per 10 menit per chat)
+    agar "baca memori" bermakna tanpa membebani API di tiap pesan.
+    """
+    try:
+        import time as _t
+        from src.kv import get_cache, set_cache
+
+        key = f"mem_updated:{chat_id}"
+        last = None
+        try:
+            last = await get_cache(key)
+        except Exception:
+            last = None
+        if last:
+            try:
+                if (_t.time() - float(last)) < 600:
+                    return
+            except (TypeError, ValueError):
+                pass
+
+        await _update_memory(chat_id, user_message, bot_response, current_memory)
+        try:
+            await set_cache(key, str(_t.time()), ttl_seconds=900)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning("Gagal update memori otomatis: %s", str(e))
+
+
 # Model kandidat untuk rotasi & fallback otomatis
 DEFAULT_MODEL_CANDIDATES = [
     "gemini-3.6-flash",
@@ -243,6 +352,81 @@ def _generation_timeout(jalur: str) -> float:
     if jalur == "tools":
         return 45.0
     return 8.0
+
+
+async def _gemini_generate_with_tools(
+    system_prompt: str,
+    contents: list,
+    tools: Optional[list],
+    jalur: str,
+    chat_id: int,
+    deploy_handler: Optional[Callable[[str, Any], Awaitable[None]]] = None,
+) -> tuple[str, int]:
+    """
+    Menjalankan generasi Gemini dengan function-calling loop (maks 3 iterasi).
+    Hasil tool dieksekusi & diumpankan kembali sebelum jawaban final, sehingga
+    respons benar-benar grounded pada data tool.
+    Returns: (final_text, total_tokens)
+    """
+    max_iterations = 3
+    iteration = 0
+    total_tokens = 0
+
+    response, _, tokens = await _generate_content_with_fallback(
+        system_prompt, tools, contents, timeout_seconds=_generation_timeout(jalur)
+    )
+    total_tokens += tokens
+
+    while iteration < max_iterations:
+        iteration += 1
+
+        if not hasattr(response, "function_calls") or not response.function_calls:
+            break
+
+        if response.candidates and len(response.candidates) > 0:
+            contents.append(response.candidates[0].content)
+
+        function_responses = []
+        for fc in response.function_calls:
+            func_name = fc.name
+            func_args = dict(fc.args) if fc.args else {}
+            result = await _execute_function_call(func_name, func_args, chat_id)
+            if deploy_handler:
+                try:
+                    await deploy_handler(func_name, result)
+                except Exception as dh_err:
+                    logger.warning("Deploy handler gemini error: %s", str(dh_err))
+            function_responses.append(
+                types.Part.from_function_response(
+                    name=func_name,
+                    response=result,
+                )
+            )
+
+        contents.append(
+            types.Content(
+                role="user",
+                parts=function_responses,
+            )
+        )
+
+        response, _, tokens = await _generate_content_with_fallback(
+            system_prompt, tools, contents, timeout_seconds=_generation_timeout(jalur)
+        )
+        total_tokens += tokens
+
+    bot_response = ""
+    if hasattr(response, "text") and response.text:
+        bot_response = response.text
+    elif response.candidates:
+        for part in response.candidates[0].content.parts:
+            if hasattr(part, "text") and part.text:
+                bot_response += part.text
+
+    if not bot_response:
+        bot_response = "hmm, aku lagi agak bingung nih. coba lagi nanti ya 😅"
+
+    return clean_tool_calls(bot_response), total_tokens
 
 
 async def _generate_content_with_fallback(
@@ -435,7 +619,7 @@ async def chat_with_oline(
         history = await get_history(chat_id)
 
         # 2. Build system prompt
-        system_prompt = await _build_system_prompt_async(memory, user_name=user_name)
+        system_prompt = await _build_system_prompt_async(memory, user_name=user_name, chat_id=chat_id)
 
         # Tentukan jalur fallback optimal sesuai brief.md
         if intent is None:
@@ -465,12 +649,14 @@ async def chat_with_oline(
                 user_message=user_message,
                 tools=tool_declarations,
                 chat_id=chat_id,
+                intent=intent,
             )
             if fallback_response and "Semua model AI sedang error" not in fallback_response:
                 fallback_response = clean_tool_calls(fallback_response)
                 history.append({"role": "user", "text": user_message})
                 history.append({"role": "model", "text": fallback_response})
                 await save_history(chat_id, history)
+                await _maybe_update_memory(chat_id, user_message, fallback_response, memory)
                 return fallback_response
         except Exception as fallback_err:
             logger.warning("Fallback chain '%s' failed: %s. Falling back to Gemini...", jalur, str(fallback_err))
@@ -487,82 +673,34 @@ async def chat_with_oline(
         })
 
         try:
-            # 5. Generate response (dengan timeout sesuai jalur & automatic fallback)
-            response, used_model, tokens_used = await _generate_content_with_fallback(
-                system_prompt, tools, contents, timeout_seconds=_generation_timeout(jalur)
+            async def _deploy_handler(func_name: str, result: Any) -> None:
+                # Khusus tool deploy_to_vercel: verifikasi hasil SUKSES vs ERROR
+                if func_name == "deploy_to_vercel":
+                    is_success = (
+                        isinstance(result, dict)
+                        and result.get("status") == "success"
+                        and result.get("result_code") == "SUKSES"
+                        and bool(result.get("url"))
+                    )
+                    if not is_success and not is_retry:
+                        err_reason = result.get("error") if isinstance(result, dict) else str(result)
+                        await save_pending_task(
+                            chat_id=chat_id,
+                            user_message=user_message,
+                            intent=intent,
+                            user_name=user_name,
+                            error_reason=str(err_reason)[:200],
+                        )
+
+            # 5-7. Generate dengan function-calling loop (hasil tool diumpankan balik)
+            bot_response, total_tokens_session = await _gemini_generate_with_tools(
+                system_prompt=system_prompt,
+                contents=contents,
+                tools=tools,
+                jalur=jalur,
+                chat_id=chat_id,
+                deploy_handler=_deploy_handler,
             )
-            total_tokens_session = tokens_used
-
-            # 6. Handle function calling loop jika ada
-            max_iterations = 3
-            iteration = 0
-
-            while iteration < max_iterations:
-                iteration += 1
-
-                if not hasattr(response, "function_calls") or not response.function_calls:
-                    break
-
-                if response.candidates and len(response.candidates) > 0:
-                    contents.append(response.candidates[0].content)
-
-                function_responses = []
-                for fc in response.function_calls:
-                    func_name = fc.name
-                    func_args = dict(fc.args) if fc.args else {}
-                    result = await _execute_function_call(func_name, func_args, chat_id)
-
-                    # Khusus tool deploy_to_vercel: verifikasi hasil SUKSES vs ERROR
-                    if func_name == "deploy_to_vercel":
-                        is_success = (
-                            isinstance(result, dict)
-                            and result.get("status") == "success"
-                            and result.get("result_code") == "SUKSES"
-                            and bool(result.get("url"))
-                        )
-                        if not is_success and not is_retry:
-                            err_reason = result.get("error") if isinstance(result, dict) else str(result)
-                            await save_pending_task(
-                                chat_id=chat_id,
-                                user_message=user_message,
-                                intent=intent,
-                                user_name=user_name,
-                                error_reason=str(err_reason)[:200],
-                            )
-
-                    function_responses.append(
-                        types.Part.from_function_response(
-                            name=func_name,
-                            response=result,
-                        )
-                    )
-
-                contents.append(
-                    types.Content(
-                        role="user",
-                        parts=function_responses,
-                    )
-                )
-
-                # Generate lagi dengan function results
-                response, used_model, tokens_used = await _generate_content_with_fallback(
-                    system_prompt, tools, contents, timeout_seconds=_generation_timeout(jalur)
-                )
-                total_tokens_session += tokens_used
-
-            # 7. Extract final text response
-            bot_response = ""
-            if hasattr(response, "text") and response.text:
-                bot_response = response.text
-            elif response.candidates:
-                for part in response.candidates[0].content.parts:
-                    if hasattr(part, "text") and part.text:
-                        bot_response += part.text
-
-            if not bot_response:
-                bot_response = "hmm, aku lagi agak bingung nih. coba lagi nanti ya 😅"
-
-            bot_response = clean_tool_calls(bot_response)
 
             # 9. Simpan pemakaian token ke KV
             try:
@@ -621,6 +759,7 @@ async def chat_with_oline(
             history.append({"role": "user", "text": user_message})
             history.append({"role": "model", "text": bot_response})
             await save_history(chat_id, history)
+            await _maybe_update_memory(chat_id, user_message, bot_response, memory)
 
         return bot_response
 

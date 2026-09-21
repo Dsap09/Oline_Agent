@@ -85,6 +85,7 @@ async def _run_task(chat_id: int, perintah: str, intent: str, user_name: str, ms
         send_telegram_message,
         update_progress,
     )
+    from src.kv import clear_task_start
     from src.gemini import chat_with_oline
 
     is_landing = intent in ("preview", "deploy", "design_reference")
@@ -109,9 +110,9 @@ async def _run_task(chat_id: int, perintah: str, intent: str, user_name: str, ms
 
         if is_landing:
             if msg_id:
-                await update_progress(chat_id, msg_id, "⏳ [1/4] Menyusun struktur HTML... Sisa 25 detik.")
-                await update_progress(chat_id, msg_id, "⏳ [2/4] Membuat CSS & Tampilan Wabi-Sabi... Sisa 15 detik.")
-                await update_progress(chat_id, msg_id, "⏳ [3/4] Menambahkan efek Canvas & menyiapkan preview... Sisa 8 detik.")
+                await update_progress(chat_id, msg_id, "⏳ Menyusun struktur landing page...")
+                await update_progress(chat_id, msg_id, "⏳ Merancang gaya visual & mencari referensi desain...")
+                await update_progress(chat_id, msg_id, "⏳ Menyiapkan preview & link...")
             response_text = await chat_with_oline(
                 chat_id=chat_id,
                 user_message=perintah,
@@ -152,6 +153,7 @@ async def _run_task(chat_id: int, perintah: str, intent: str, user_name: str, ms
 
         await clear_pending_task(chat_id)
         await clear_progress_message_id(chat_id)
+        await clear_task_start(chat_id)
         if is_landing:
             await delete_checkpoint(chat_id)
 

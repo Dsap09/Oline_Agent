@@ -15,6 +15,7 @@ from src.utils import clean_tool_call_text, clean_tool_calls
 from src.kv import (
     clear_pending_task,
     clear_progress_message_id,
+    clear_task_start,
     delete_checkpoint,
     get_all_pending_tasks,
     get_checkpoint,
@@ -131,7 +132,9 @@ async def update_progress(chat_id: int, message_id: int, text: str) -> bool:
 
     try:
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        edit_text = text[:4096] if len(text) > 4096 else text
+        from src.utils import append_elapsed_time
+        edit_text = await append_elapsed_time(chat_id, text)
+        edit_text = edit_text[:4096] if len(edit_text) > 4096 else edit_text
         await bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
@@ -249,21 +252,21 @@ async def process_pending_task(target_chat_id: Optional[int] = None) -> dict[str
                 if msg_id:
                     await update_progress(
                         chat_id, msg_id,
-                        "⏳ [1/4] Menyusun struktur HTML... Sisa 25 detik."
+                        "⏳ Menyusun struktur landing page..."
                     )
 
                 # Langkah 2: Membuat CSS & Tampilan
                 if msg_id:
                     await update_progress(
                         chat_id, msg_id,
-                        "⏳ [2/4] Membuat CSS & Tampilan Wabi-Sabi... Sisa 15 detik."
+                        "⏳ Merancang gaya visual & mencari referensi desain..."
                     )
 
                 # Langkah 3: Menyiapkan Preview & Link
                 if msg_id:
                     await update_progress(
                         chat_id, msg_id,
-                        "⏳ [3/4] Menambahkan efek Canvas & menyiapkan preview... Sisa 8 detik."
+                        "⏳ Menyiapkan preview & link..."
                     )
 
                 # Gunakan context prompt jika checkpoint memiliki langkah selesai sebelumnya
@@ -335,6 +338,7 @@ async def process_pending_task(target_chat_id: Optional[int] = None) -> dict[str
             # Bersihkan task, checkpoint & progress message_id setelah sukses penuh
             await clear_pending_task(chat_id)
             await clear_progress_message_id(chat_id)
+            await clear_task_start(chat_id)
             if is_landing:
                 await delete_checkpoint(chat_id)
 
@@ -370,6 +374,7 @@ async def process_pending_task(target_chat_id: Optional[int] = None) -> dict[str
 
             await clear_pending_task(chat_id)
             await clear_progress_message_id(chat_id)
+            await clear_task_start(chat_id)
 
             # Jalankan health check otomatis setelah slow path selesai (brief.md)
             try:
@@ -393,12 +398,16 @@ async def call_model_with_fallback(
     user_message: str,
     tools: Optional[list[dict]] = None,
     chat_id: int = 0,
+    intent: Optional[str] = None,
 ) -> str:
     """
     Eksekusi alur pemanggilan model AI dengan urutan fallback optimal per jalur (brief.md):
     - 'fast' (Chat Ringan): Groq -> Mistral -> Cerebras -> OpenRouter -> Gemini
     - 'tools' (Tools Ringan): Mistral -> Gemini -> Cerebras -> OpenRouter -> Groq
     - 'landing' (Landing Page/Deploy): DeepSeek -> Mistral -> Gemini -> Cerebras -> OpenRouter
+
+    Sebelum model menjawab, gate grounding memastikan data nyata (dari tool wajib intent)
+    tersedia di konteks; jika tidak, Oline jujur menyatakan data tak tersedia / minta info.
     """
     if jalur == "fast":
         order = ["groq", "mistral", "cerebras", "openrouter", "gemini"]
@@ -408,6 +417,25 @@ async def call_model_with_fallback(
         order = ["deepseek", "mistral", "gemini", "cerebras", "openrouter"]
     else:
         order = ["groq", "mistral", "gemini"]
+
+    # --- Grounding wajib: ambil data nyata sebelum model menjawab (anti-halu) ---
+    try:
+        from src.grounding import (
+            GROUNDED, NEED_INFO, SKIP, UNAVAILABLE,
+            build_grounding_augment, prepare_grounding,
+        )
+        g_status, g_tool, g_result, g_msg = await prepare_grounding(chat_id, intent, user_message)
+        if g_status == NEED_INFO and g_msg:
+            return f"Biar aku kasih data yang akurat, aku butuh info dulu nih: {g_msg}"
+        if g_status == UNAVAILABLE and g_msg:
+            return (
+                f"Hmm, aku belum bisa dapat data akuratnya nih ({g_msg}). "
+                "Jadi aku nggak mau asal nebak. Coba lagi nanti ya."
+            )
+        if g_status == GROUNDED and g_tool:
+            system_prompt = f"{system_prompt}\n{build_grounding_augment(g_tool, g_result)}"
+    except Exception as g_err:
+        logger.warning("Grounding prepare gagal (lanjut tanpa grounding): %s", str(g_err))
 
     for provider in order:
         try:
@@ -447,19 +475,21 @@ async def call_model_with_fallback(
                     return res.strip()
 
             elif provider == "gemini" and os.environ.get("GEMINI_API_KEY", "").strip():
-                from src.gemini import _build_tools, _format_history_for_gemini, _generate_content_with_fallback, _generation_timeout
+                from src.gemini import _build_tools, _format_history_for_gemini, _gemini_generate_with_tools
                 gemini_tools = _build_tools(tools) if tools else None
                 contents = _format_history_for_gemini(history)
                 contents.append({"role": "user", "parts": [{"text": user_message}]})
-                resp, _, _ = await _generate_content_with_fallback(
-                    system_prompt, gemini_tools, contents,
-                    timeout_seconds=_generation_timeout(jalur),
+                # Jalankan function-calling loop sungguhan agar hasil tool diumpankan
+                # balik (bukan return langsung yang bisa halu karena tool tak dieksekusi).
+                res, _ = await _gemini_generate_with_tools(
+                    system_prompt=system_prompt,
+                    contents=contents,
+                    tools=gemini_tools,
+                    jalur=jalur,
+                    chat_id=chat_id,
                 )
-                if hasattr(resp, "text") and resp.text and resp.text.strip():
-                    res = resp.text.strip()
-                    res_clean = clean_tool_calls(res)
-                    if res_clean:
-                        return res_clean
+                if res and res.strip():
+                    return res.strip()
         except Exception as e:
             logger.warning("Provider '%s' failed on fallback chain ('%s'): %s", provider, jalur, str(e))
             continue

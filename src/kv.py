@@ -672,6 +672,44 @@ async def clear_progress_message_id(chat_id: int) -> bool:
     return result is not None
 
 
+# --- Task Start Time (untuk progres waktu nyata) ---
+
+async def save_task_start(chat_id: int) -> bool:
+    """
+    Menyimpan timestamp awal task (epoch detik) ke KV.
+    Dipakai untuk menghitung waktu proses nyata pada pesan progres.
+    TTL 1 jam (3600 detik).
+    """
+    import time
+    key = f"task_start:{chat_id}"
+    result = await _kv_request(["SET", key, str(int(time.time())), "EX", "3600"])
+    return result is not None
+
+
+async def get_task_start(chat_id: int) -> Optional[float]:
+    """
+    Mengambil timestamp awal task (epoch detik) dari KV.
+    Returns None jika tidak ada.
+    """
+    key = f"task_start:{chat_id}"
+    result = await _kv_request(["GET", key])
+    if result and result.get("result"):
+        try:
+            return float(result["result"])
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+async def clear_task_start(chat_id: int) -> bool:
+    """
+    Menghapus timestamp awal task dari KV setelah task selesai.
+    """
+    key = f"task_start:{chat_id}"
+    result = await _kv_request(["DEL", key])
+    return result is not None
+
+
 # --- Pending Task Functions (Auto-Retry on Failure) ---
 
 async def save_pending_task(
