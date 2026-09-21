@@ -125,8 +125,12 @@ async def notify_process(
     context: Optional[Any] = None,
 ) -> None:
     """
-    Mengirimkan chat action (typing, upload_photo, dll.)
-    dan/atau pesan status proses ke pengguna Telegram.
+    Mengirimkan chat action (typing, upload_photo, dll.) dan/atau pesan status proses
+    ke pengguna Telegram.
+
+    Agar tidak membanjiri chat dengan banyak bubble, jika sudah ada pesan progres
+    tersimpan (progres_msg_id di KV) pesan status di-EDIT ke pesan itu juga
+    (satu pesan dinamis). Jika tidak ada, barulah kirim pesan baru.
     """
     if not chat_id or chat_id == 0:
         return
@@ -146,8 +150,27 @@ async def notify_process(
 
         if action:
             await bot.send_chat_action(chat_id=chat_id, action=action)
-        if message and message.strip():
-            await bot.send_message(chat_id=chat_id, text=message.strip())
+        if not (message and message.strip()):
+            return
+
+        text = message.strip()
+
+        # Edit pesan progres yang sudah ada (satu bubble dinamis), bukan kirim baru.
+        try:
+            from src.kv import get_progress_message_id
+            progress_msg_id = await get_progress_message_id(chat_id)
+            if progress_msg_id:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=progress_msg_id,
+                    text=text,
+                )
+                return
+        except Exception:
+            # Jika edit gagal (mis. pesan tak ditemukan / terhapus), fallback ke pesan baru.
+            pass
+
+        await bot.send_message(chat_id=chat_id, text=text)
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning("notify_process error for chat_id %s: %s", chat_id, str(e))

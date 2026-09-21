@@ -634,5 +634,8 @@ async def chat_with_oline(
             # Jika 1x retry otomatis masih gagal -> Tanya konfirmasi ke pengguna
             return "Task ini masih gagal nih. Mau dicoba lagi atau skip? 😢"
 
-        return "Task ini masih gagal nih. Mau dicoba lagi atau skip? 😢"
+        # Path retry (background task: worker Render / process_pending): jangan sembunyikan
+        # kegagalan sebagai string sukses. Re-raise agar caller melaporkan status gagal yang
+        # akurat (mis. "❌ Gagal memproses task...") dan tidak membungkusnya dengan "✅ Selesai!".
+        raise
 

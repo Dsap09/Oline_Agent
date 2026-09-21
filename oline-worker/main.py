@@ -161,7 +161,14 @@ async def _run_task(chat_id: int, perintah: str, intent: str, user_name: str, ms
     except Exception as e:
         logger.error("[worker] Task gagal chat=%s: %s", chat_id, str(e), exc_info=True)
         try:
-            await send_telegram_message(chat_id, f"❌ Gagal memproses task. Penyebab: {str(e)[:100]}")
+            fail_text = f"❌ Gagal memproses task. Penyebab: {str(e)[:100]}"
+            # Edit pesan progres yang sama agar tidak ada bubble sisa yang membingungkan.
+            if msg_id:
+                edited = await update_progress(chat_id, msg_id, fail_text)
+                if not edited:
+                    await send_telegram_message(chat_id, fail_text)
+            else:
+                await send_telegram_message(chat_id, fail_text)
         except Exception as send_err:
             logger.warning("Gagal kirim pesan error: %s", str(send_err))
         try:
