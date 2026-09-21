@@ -841,7 +841,7 @@ async def handle_message(
             # tetap hidup) agar task diproses — bukan proses in-instance yang mati
             # saat webhook /api/index mengembalikan 200.
             from src.handlers import trigger_process_pending_endpoint
-            asyncio.create_task(trigger_process_pending_endpoint())
+            await trigger_process_pending_endpoint()
         return
 
     # --- Akademik (ERINE): Acknowledge First, Process Later (brief.md) ---
@@ -866,7 +866,7 @@ async def handle_message(
         )
 
         from src.handlers import trigger_process_pending_endpoint
-        asyncio.create_task(trigger_process_pending_endpoint())
+        await trigger_process_pending_endpoint()
         return
 
     # --- Intent berat lainnya: Acknowledge First, Process Later (anti 504 webhook) ---
@@ -891,7 +891,7 @@ async def handle_message(
         )
 
         from src.handlers import trigger_process_pending_endpoint
-        asyncio.create_task(trigger_process_pending_endpoint())
+        await trigger_process_pending_endpoint()
         return
 
     # Kirim "typing" action HANYA untuk Slow Path (fitur berat) untuk memangkas latensi Fast Path
