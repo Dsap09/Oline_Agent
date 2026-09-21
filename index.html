@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lembar Halaman — Toko Buku Independen</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Manrope:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Manrope',sans-serif; background:#f8f4ec; color:#1f3d2b; line-height:1.6; }
+  .container { max-width:1100px; margin:0 auto; padding:0 24px; }
+
+  /* NAV */
+  nav { padding:24px 0; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(31,61,43,.15); }
+  .logo { font-family:'Fraunces',serif; font-size:1.6rem; font-weight:700; color:#1f3d2b; }
+  .logo span { color:#c9a227; }
+  nav ul { display:flex; gap:32px; list-style:none; }
+  nav a { text-decoration:none; color:#1f3d2b; font-weight:500; font-size:.95rem; }
+  nav a:hover { color:#c9a227; }
+
+  /* HERO */
+  .hero { padding:80px 0 60px; display:grid; grid-template-columns:1.1fr .9fr; gap:60px; align-items:center; }
+  .hero h1 { font-family:'Fraunces',serif; font-size:3.2rem; line-height:1.15; font-weight:600; }
+  .hero h1 em { font-style:italic; color:#c9a227; }
+  .hero p { margin:24px 0 32px; font-size:1.05rem; color:#3d5a4c; max-width:440px; }
+  .btn { display:inline-block; background:#1f3d2b; color:#f8f4ec; padding:14px 32px; text-decoration:none; font-weight:600; font-size:.95rem; transition:.3s; }
+  .btn:hover { background:#c9a227; color:#1f3d2b; }
+  .hero-img { background:url('https://images.unsplash.com/photo-1521587760476-6c12a4b040da?auto=format&fit=crop&w=1200&q=80') center/cover; min-height:420px; }
+  .hero-img::after { content:''; display:block; }
+
+  /* KATEGORI */
+  .kategori { padding:40px 0 60px; }
+  .kategori h2 { font-family:'Fraunces',serif; font-size:2rem; margin-bottom:32px; }
+  .grid-kat { display:grid; grid-template-columns:repeat(4,1fr); gap:20px; }
+  .kat-item { background:#fff; padding:28px 20px; text-align:center; border:1px solid rgba(31,61,43,.1); transition:.3s; }
+  .kat-item:hover { transform:translateY(-4px); box-shadow:0 8px 24px rgba(31,61,43,.08); }
+  .kat-item h3 { font-family:'Fraunces',serif; font-size:1.15rem; margin-bottom:8px; }
+  .kat-item p { font-size:.85rem; color:#3d5a4c; }
+
+  /* PILIHAN BULAN INI */
+  .pilihan { padding:60px 0; background:#1f3d2b; color:#f8f4ec; }
+  .pilihan h2 { font-family:'Fraunces',serif; font-size:2rem; margin-bottom:8px; }
+  .pilihan .sub { font-style:italic; color:#c9a227; margin-bottom:40px; }
+  .grid-buku { display:grid; grid-template-columns:repeat(3,1fr); gap:24px; }
+  .buku { background:rgba(248,244,236,.06); padding:20px; }
+  .buku img { width:100%; height:200px; object-fit:cover; margin-bottom:16px; }
+  .buku h4 { font-family:'Fraunces',serif; font-size:1.1rem; }
+  .buku p { font-size:.85rem; opacity:.8; margin:4px 0 12px; }
+  .buku .harga { color:#c9a227; font-weight:600; }
+
+  /* TENTANG */
+  .tentang { padding:80px 0; display:grid; grid-template-columns:.9fr 1.1fr; gap:60px; align-items:center; }
+  .tentang-img { background:url('https://images.unsplash.com/photo-1507842217343-583bb7270b66?auto=format&fit=crop&w=1200&q=80') center/cover; min-height:400px; }
+  .tentang h2 { font-family:'Fraunces',serif; font-size:2rem; margin-bottom:20px; }
+  .tentang p { margin-bottom:16px; color:#3d5a4c; }
+
+  /* NEWSLETTER */
+  .news { padding:60px 0; text-align:center; border-top:1px solid rgba(31,61,43,.15); }
+  .news h2 { font-family:'Fraunces',serif; font-size:1.8rem; margin-bottom:12px; }
+  .news p { color:#3d5a4c; margin-bottom:24px; }
+  .news input { padding:14px 20px; width:320px; border:1px solid rgba(31,61,43,.3); background:#fff; font-family:'Manrope'; }
+  .news .btn { border:none; cursor:pointer; }
+
+  /* FOOTER */
+  footer { background:#1f3d2b; color:#f8f4ec; padding:40px 0; text-align:center; }
+  footer p { font-size:.85rem; opacity:.7; }
+  footer .logo { color:#f8f4ec; margin-bottom:12px; display:block; }
+
+  @media (max-width:768px) {
+    .hero, .tentang { grid-template-columns:1fr; }
+    .hero h1 { font-size:2.4rem; }
+    .grid-kat { grid-template-columns:repeat(2,1fr); }
+    .grid-buku { grid-template-columns:1fr; }
+    nav ul { flex-direction:column; gap:12px; }
+    .news input { width:100%; margin-bottom:12px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="container">
+  <div class="logo">Lembar<span>.</span></div>
+  <ul>
+    <li><a href="#">Katalog</a></li>
+    <li><a href="#">Pilihan Bulan Ini</a></li>
+    <li><a href="#">Tentang</a></li>
+    <li><a href="#">Kontak</a></li>
+  </ul>
+</nav>
+
+<header class="hero container">
+  <div>
+    <h1>Buku bukan pelarian.<br>Buku adalah <em>pulang.</em></h1>
+    <p>Lembar adalah toko buku independen yang percaya setiap halaman menyimpan ruang untuk berpikir, merasa, dan tumbuh. Kami kurasi setiap judul dengan teliti — bukan sekadar stok.</p>
+    <a href="#" class="btn">Jelajahi Katalog</a>
+  </div>
+  <div class="hero-img"></div>
+</header>
+
+<section class="kategori container">
+  <h2>Rak Pilihan</h2>
+  <div class="grid-kat">
+    <div class="kat-item"><h3>Sastra</h3><p>Novel, cerpen, puisi</p></div>
+    <div class="kat-item"><h3>Nonfiksi</h3><p>Esai, biografi, sejarah</p></div>
+    <div class="kat-item"><h3>Anak</h3><p>Buku bergambar & dongeng</p></div>
+    <div class="kat-item"><h3>Zine</h3><p>Terbitan independen</p></div>
+  </div>
+</section>
+
+<section class="pilihan">
+  <div class="container">
+    <h2>Pilihan Bulan Ini</h2>
+    <p class="sub">Tiga judul yang sedang kami rekomendasikan</p>
+    <div class="grid-buku">
+      <div class="buku">
+        <img src="https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&w=600&q=80" alt="Buku 1">
+        <h4>Senja di Tepi Sungai</h4>
+        <p>Novel · A. Prameswari</p>
+        <span class="harga">Rp 98.000</span>
+      </div>
+      <div class="buku">
+        <img src="https://images.unsplash.com/photo-1512820790803-83ca734da794?auto=format&fit=crop&w=600&q=80" alt="Buku 2">
+        <h4>Catatan Seorang Peragu</h4>
+        <p>Esai · B. Wicaksono</p>
+        <span class="harga">Rp 112.000</span>
+      </div>
+      <div class="buku">
+        <img src="https://images.unsplash.com/photo-1519682337058-a94d519337bc?auto=format&fit=crop&w=600&q=80" alt="Buku 3">
+        <h4>Bumi yang Tak Pernah Diam</h4>
+        <p>Sejarah · C. Maharani</p>
+        <span class="harga">Rp 125.000</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="tentang container">
+  <div class="tentang-img"></div>
+  <div>
+    <h2>Ruang kecil untuk cerita besar</h2>
+    <p>Lembar lahir dari kegelisahan sederhana: terlalu banyak buku bagus yang tenggelam di gempuran algoritma dan bestseller instan. Kami ingin jadi ruang yang jujur — tempat rekomendasi datang dari manusia, bukan mesin.</p>
+    <p>Setiap bulan, tim kami membaca puluhan judul dan memilih yang benar-benar layak kamu bawa pulang. Kalau kamu ragu, datanglah dan ngobrol — kami senang menemanimu mencari buku yang tepat.</p>
+    <a href="#" class="btn">Kenali Kami Lebih Dekat</a>
+  </div>
+</section>
+
+<section class="news">
+  <div class="container">
+    <h2>Surat dari Lembar</h2>
+    <p>Rekomendasi buku dan catatan kurator, dikirim sebulan sekali. Tanpa spam.</p>
+    <form>
+      <input type="email" placeholder="Alamat email kamu" required>
+      <button class="btn" type="submit">Berlangganan</button>
+    </form>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <span class="logo">Lembar<span style="color:#c9a227;">.</span></span>
+    <p>Jln. Teratai No. 12, Yogyakarta · Buka Selasa–Minggu, 09.00–21.00</p>
+    <p>© 2026 Lembar Toko Buku. Dibuat dengan kesabaran.</p>
+  </div>
+</footer>
+
+</body>
+</html>
