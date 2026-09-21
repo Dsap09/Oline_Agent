@@ -108,6 +108,22 @@ async def chat_deepinfra(
     max_iterations = 3
     iteration = 0
 
+    # Deteksi intent landing: jika tool preview_with_codepen tersedia, model WAJIB
+    # memanggilnya agar menghasilkan link preview sungguhan (bukan sekadar teks janji).
+    is_landing = any(
+        (t.get("function", {}) or {}).get("name") == "preview_with_codepen"
+        for t in openai_tools
+    )
+    preview_called = False
+
+    # Base kwargs untuk follow-up (dipakai di loop & enforcement preview).
+    follow_kwargs: dict[str, Any] = {
+        "model": model_name,
+        "messages": messages,
+        "temperature": 0.9,
+        "max_tokens": 4096,
+    }
+
     while iteration < max_iterations:
         iteration += 1
 
@@ -160,6 +176,9 @@ async def chat_deepinfra(
                 logger.error("Error executing tool %s via DeepInfra: %s", func_name, str(ex))
                 tool_result = {"error": f"Error executing tool {func_name}: {str(ex)}"}
 
+            if func_name == "preview_with_codepen":
+                preview_called = True
+
             tool_content = json.dumps(tool_result, ensure_ascii=False) if not isinstance(tool_result, str) else tool_result
 
             messages.append({
@@ -169,13 +188,6 @@ async def chat_deepinfra(
             })
 
         # Panggil ulang untuk mendapatkan respons final dari tool results
-        follow_kwargs: dict[str, Any] = {
-            "model": model_name,
-            "messages": messages,
-            "temperature": 0.9,
-            "max_tokens": 4096,
-        }
-
         response = await asyncio.wait_for(
             asyncio.to_thread(client.chat.completions.create, **follow_kwargs),
             timeout=DEEPINFRA_TIMEOUT,
@@ -187,6 +199,87 @@ async def chat_deepinfra(
 
     # Extract final text
     final_text = response_message.content or ""
+
+    # --- Enforcement: task landing belum selesai kalau model tidak memanggil preview_with_codepen.
+    # Paksa satu iterasi dengan instruksi eksplisit agar menghasilkan link preview sungguhan,
+    # bukan sekadar teks yang berjanji membuat preview. ---
+    if is_landing and not preview_called:
+        logger.warning("DeepInfra tidak memanggil preview_with_codepen; memaksa iterasi preview.")
+        try:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Instruksi sistem: kamu BELUM memanggil tool `preview_with_codepen`, jadi "
+                    "TASK BELUM SELESAI. Sekarang WAJIB panggil tool `preview_with_codepen` dengan "
+                    "parameter lengkap (title, html, css, js) berisi kode HTML/CSS/JS landing page "
+                    "yang sudah kamu rancang. JANGAN hanya menulis teks atau berjanji membuat "
+                    "preview. Setelah tool dipanggil, sampaikan ringkasan singkat beserta link "
+                    "preview yang dihasilkan."
+                ),
+            })
+            force_kwargs: dict[str, Any] = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": 0.7,
+                "max_tokens": 8192,
+                "tools": openai_tools,
+                "tool_choice": "auto",
+            }
+            response = await asyncio.wait_for(
+                asyncio.to_thread(client.chat.completions.create, **force_kwargs),
+                timeout=DEEPINFRA_TIMEOUT,
+            )
+            response_message = response.choices[0].message
+            if hasattr(response, "usage") and response.usage:
+                total_tokens += getattr(response.usage, "total_tokens", 0)
+
+            # Proses tool call dari respons paksaan ini (buat preview + ambil link).
+            forced_calls = getattr(response_message, "tool_calls", None)
+            if forced_calls:
+                messages.append({
+                    "role": "assistant",
+                    "content": response_message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": getattr(tc, "id", ""),
+                            "type": "function",
+                            "function": {
+                                "name": getattr(getattr(tc, "function", None), "name", ""),
+                                "arguments": getattr(getattr(tc, "function", None), "arguments", "{}"),
+                            },
+                        }
+                        for tc in forced_calls
+                    ],
+                })
+                for tc in forced_calls:
+                    func_name = getattr(getattr(tc, "function", None), "name", "")
+                    raw_args = getattr(getattr(tc, "function", None), "arguments", "{}")
+                    try:
+                        func_args = json.loads(raw_args) if raw_args else {}
+                    except json.JSONDecodeError:
+                        func_args = {}
+                    try:
+                        tool_result = await execute_tool(func_name, func_args, chat_id=chat_id)
+                    except Exception as ex:
+                        logger.error("Error executing tool %s via DeepInfra: %s", func_name, str(ex))
+                        tool_result = {"error": f"Error executing tool {func_name}: {str(ex)}"}
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": getattr(tc, "id", ""),
+                        "content": json.dumps(tool_result, ensure_ascii=False) if not isinstance(tool_result, str) else tool_result,
+                    })
+
+                # Follow-up agar model menyampaikan ringkasan + link preview.
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(client.chat.completions.create, **follow_kwargs),
+                    timeout=DEEPINFRA_TIMEOUT,
+                )
+                response_message = response.choices[0].message
+                final_text = response_message.content or ""
+                if hasattr(response, "usage") and response.usage:
+                    total_tokens += getattr(response.usage, "total_tokens", 0)
+        except Exception as e:
+            logger.warning("Enforcement preview gagal: %s", str(e))
 
     try:
         from src.kv import increment_usage
