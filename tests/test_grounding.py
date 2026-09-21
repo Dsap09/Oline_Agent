@@ -60,6 +60,25 @@ class TestGrounding(unittest.TestCase):
             self.assertEqual(status, GROUNDED)
             self.assertEqual(tool, "search_internet")
 
+    def test_fast_path_faktual_grounded(self):
+        with patch("src.tools.execute_tool", new=AsyncMock(return_value={"hasil": "info"})) as mock:
+            status, tool, _, _ = self._run(None, "siapa pendiri JKT48?")
+            self.assertEqual(status, GROUNDED)
+            self.assertEqual(tool, "search_internet")
+            mock.assert_called_once()
+
+    def test_fast_path_smalltalk_skip(self):
+        with patch("src.tools.execute_tool", new=AsyncMock()) as mock:
+            status, _, _, _ = self._run(None, "halo apa kabar")
+            self.assertEqual(status, SKIP)
+            mock.assert_not_called()
+
+    def test_fast_path_bantuan_skip(self):
+        with patch("src.tools.execute_tool", new=AsyncMock()) as mock:
+            status, _, _, _ = self._run(None, "bisa bantu aku ya")
+            self.assertEqual(status, SKIP)
+            mock.assert_not_called()
+
     def _run(self, intent, message):
         return _run_sync(prepare_grounding, 123, intent, message)
 

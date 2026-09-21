@@ -33,6 +33,54 @@ def _is_definitional(message: str) -> bool:
     return bool(re.search(r"\b(apa itu|definisi|pengertian|arti)\b", message.lower()))
 
 
+def _is_factual_query(message: str) -> bool:
+    """
+    Deteksi apakah pesan fast path (intent None) butuh grounding pencarian.
+    Mengembalikan True untuk pertanyaan faktual/real-time; False untuk obrolan santai.
+    """
+    low = message.lower().strip()
+    if not low:
+        return False
+
+    # Obrolan/balasan singkat yang tidak butuh pencarian
+    small_talk = {
+        "halo", "hai", "hi", "hello", "hey", "pagi", "siang", "sore", "malam",
+        "apa kabar", "apa kabarmu", "gimana", "gimana kabar", "makasih",
+        "terima kasih", "thanks", "ok", "oke", "sip", "santai", "iya", "ya",
+        "baik", "bagus", "mantap", "kamu siapa", "siapa kamu",
+    }
+
+    # Buang seluruh frase sapaan/balasan; jika tak ada isi tersisa -> bukan faktual.
+    remaining = low
+    for phrase in small_talk:
+        remaining = re.sub(rf"\b{re.escape(phrase)}\b", " ", remaining)
+    remaining = re.sub(r"\s+", " ", remaining).strip()
+    if not remaining or len(remaining) < 3:
+        return False
+
+    # Kata tanya / kata yang menandakan butuh informasi faktual (pada sisa teks)
+    if re.search(
+        r"\b(siapa|apa|kapan|dimana|di mana|berapa|kenapa|bagaimana|mengapa|apakah|"
+        r"caranya|definisi|pengertian|arti)\b",
+        remaining,
+    ):
+        return True
+
+    # Frasa spesifik yang menandakan minta dicarikan informasi
+    if re.search(r"\b(tolong cari|tolong jelaskan|tolong carikan|carikan|cariin|tolong info)\b", remaining):
+        return True
+
+    # Kata kunci berita/real-time/current
+    if re.search(
+        r"\b(terbaru|berita|sekarang|hari ini|harga|update|live|news|tahun ini|"
+        r"tren|info|profil|sejarah|kapan berdiri)\b",
+        remaining,
+    ):
+        return True
+
+    return False
+
+
 def _extract_city(message: str) -> Optional[dict]:
     low = message.lower().strip()
     m = re.search(r"(?:cuaca|suhu|panas|hujan)\s*(?:di|untuk|kota)?\s*([a-z][a-z\s\-]{1,40}?)(?:\?|\.|$)", low)
@@ -174,6 +222,20 @@ async def prepare_grounding(
         - status SKIP: tidak butuh grounding.
     """
     if not intent:
+        # Fast path (obrolan biasa): ground via pencarian untuk pertanyaan faktual/real-time.
+        if _is_factual_query(user_message):
+            q = user_message.strip()
+            if not q:
+                return SKIP, None, None, None
+            from src.tools import execute_tool
+            try:
+                result = await execute_tool("search_internet", {"query": q}, chat_id=chat_id)
+            except Exception as e:
+                logger.warning("Grounding fast path (search) gagal: %s", str(e))
+                return UNAVAILABLE, None, None, f"Pencarian gagal: {str(e)[:150]}"
+            if isinstance(result, dict) and result.get("error"):
+                return UNAVAILABLE, None, None, str(result.get("error"))[:250]
+            return GROUNDED, "search_internet", result, None
         return SKIP, None, None, None
 
     spec = _GROUNDING_SPECS.get(intent)
