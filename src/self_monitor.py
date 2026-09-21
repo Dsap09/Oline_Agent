@@ -85,9 +85,11 @@ async def self_monitor(chat_id: int) -> None:
         return
 
     try:
-        # Ambil log error dan warn terbaru
-        err_logs = await fetch_vercel_logs(limit=10, level="error")
-        warn_logs = await fetch_vercel_logs(limit=10, level="warn")
+        # Ambil log error dan warn terbaru (HANYA fase runtime, bukan build).
+        # Build failure yang flaky (mis. "outputs step failed", "/vercel/output invalid")
+        # sering muncul di log build dan memicu notifikasi palsu — jadi diabaikan.
+        err_logs = await fetch_vercel_logs(limit=10, level="error", runtime_only=True)
+        warn_logs = await fetch_vercel_logs(limit=10, level="warn", runtime_only=True)
 
         logs_combined = ""
         if (

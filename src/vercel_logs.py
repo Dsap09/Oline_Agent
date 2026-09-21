@@ -65,12 +65,16 @@ async def _get_latest_deployment_id() -> Optional[str]:
     return None
 
 
-async def fetch_vercel_logs(limit: int = 10, level: Optional[str] = None) -> str:
+async def fetch_vercel_logs(limit: int = 10, level: Optional[str] = None, runtime_only: bool = False) -> str:
     """
     Mengambil runtime log dari Vercel via /v1/deployments/{id}/events.
     Endpoint ini butuh deployment_id, jadi resolve deployment terbaru dulu.
     Filter level (error/warn/info) dilakukan client-side karena endpoint events
     tidak punya parameter level.
+
+    runtime_only=True: abaikan event fase BUILD (stderr/stdout build) karena build
+    failure yang flaky/tidak relevan sering muncul di sana dan bisa memicu notifikasi
+    palsu. Hanya proses event fase RUNTIME (log aplikasi).
     """
     token = (os.environ.get("VERCEL_API_TOKEN", "") or os.environ.get("VERCEL_TOKEN", "")).strip()
     if not token:
@@ -105,6 +109,10 @@ async def fetch_vercel_logs(limit: int = 10, level: Optional[str] = None) -> str
 
     lines = []
     for ev in events:
+        # Abaikan event fase build (hanya penting untuk runtime)
+        if runtime_only and (ev.get("info") or {}).get("type") == "build":
+            continue
+
         ev_type = ev.get("type", "info")
         ev_level = _event_level(ev_type)
         if level and ev_level != level.lower():
