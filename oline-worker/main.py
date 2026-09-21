@@ -157,6 +157,14 @@ async def _run_task(chat_id: int, perintah: str, intent: str, user_name: str, ms
         if is_landing:
             await delete_checkpoint(chat_id)
 
+        # Paritas: self_monitor untuk tool intent yang diproses di worker (bukan landing).
+        if not is_landing:
+            try:
+                from src.self_monitor import self_monitor
+                asyncio.create_task(self_monitor(chat_id))
+            except Exception as sm_err:
+                logger.warning("Gagal self_monitor: %s", str(sm_err))
+
         logger.info("[worker] Task selesai chat=%s ok=%s", chat_id, ok)
         await _notify_vercel_callback(chat_id, "success", str(response_text)[:500])
 

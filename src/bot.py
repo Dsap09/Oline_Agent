@@ -852,54 +852,48 @@ async def handle_message(
             await trigger_process_pending_endpoint()
         return
 
-    # --- Akademik (ERINE): Acknowledge First, Process Later (brief.md) ---
-    # Intent akademik diproses di background agar tidak memblokir webhook (ERINE bisa lambat/timeout).
-    if intent == "akademik":
-        from src.kv import save_pending_task, save_progress_message_id
+    # --- Tool intent lainnya: delegasi ke worker Render (hangat) agar bebas cold start Vercel ---
+    # Tetap diproses sinkron di Vercel: perintah imperatif cepat (health, kelola_fitur,
+    # cek/renew token) dan list/delete deployment.
+    _quick_local = intent in ("health", "kelola_fitur", "cek_token", "renew_token")
+    _deploy_list_delete = intent == "deploy" and not is_landing_page_generation_request(user_message, intent)
+    if intent is not None and not _quick_local and not _deploy_list_delete:
+        from src.handlers import delegate_to_worker, trigger_process_pending_endpoint
+        from src.kv import save_pending_task, save_progress_message_id, save_task_start
+
+        # Catat waktu mulai agar pesan progres menampilkan waktu proses nyata.
+        await save_task_start(chat_id)
 
         progres_msg = await update.effective_chat.send_message(
             "⏳ Baik, permintaan kamu sedang diproses. Aku kabari setelah selesai ya."
         )
         msg_id = progres_msg.message_id if progres_msg else None
-
         if msg_id:
             await save_progress_message_id(chat_id, msg_id)
 
+        # Simpan pending task (ditandai delegated agar cron /api/process_pending tidak memproses ulang)
         await save_pending_task(
             chat_id=chat_id,
             user_message=user_message,
             intent=intent,
             user_name=user_name,
             message_id=msg_id,
+            delegated=True,
         )
 
-        from src.handlers import trigger_process_pending_endpoint
-        await trigger_process_pending_endpoint()
-        return
-
-    # --- Intent berat lainnya: Acknowledge First, Process Later (anti 504 webhook) ---
-    # Diproses di background agar webhook balas 200 cepat; hasil dikirim setelah selesai.
-    if intent in HEAVY_BACKGROUND_INTENTS:
-        from src.kv import save_pending_task, save_progress_message_id
-
-        progres_msg = await update.effective_chat.send_message(
-            "⏳ Baik, permintaan kamu sedang diproses. Aku kabari setelah selesai ya."
-        )
-        msg_id = progres_msg.message_id if progres_msg else None
-
-        if msg_id:
-            await save_progress_message_id(chat_id, msg_id)
-
-        await save_pending_task(
-            chat_id=chat_id,
-            user_message=user_message,
-            intent=intent,
-            user_name=user_name,
-            message_id=msg_id,
-        )
-
-        from src.handlers import trigger_process_pending_endpoint
-        await trigger_process_pending_endpoint()
+        # Delegate ke Render worker; fallback ke proses lokal bila Render down
+        delegated = await delegate_to_worker(chat_id, user_message, intent, user_name, msg_id)
+        if not delegated:
+            logger.warning("Delegate ke Render gagal; fallback proses lokal chat=%s", chat_id)
+            await save_pending_task(
+                chat_id=chat_id,
+                user_message=user_message,
+                intent=intent,
+                user_name=user_name,
+                message_id=msg_id,
+                delegated=False,
+            )
+            await trigger_process_pending_endpoint()
         return
 
     # Kirim "typing" action HANYA untuk Slow Path (fitur berat) untuk memangkas latensi Fast Path
