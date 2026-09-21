@@ -306,8 +306,10 @@ HEAVY_KEYWORDS = {
 # Process Later) agar webhook cepat balas 200 dan tidak timeout (504) di Vercel.
 # Intent cepat (kuota, health, kelola_fitur, cek_token, renew_token, list/delete deploy,
 # simpan catatan Notion imperatif) tetap diproses sinkron.
+# Intent tool cepat (saham, cuaca) diproses SINKRON agar respons langsung & cepat
+# (grounding mengambil data nyata lalu model merangkum singkat).
 HEAVY_BACKGROUND_INTENTS = {
-    "saham", "cuaca", "rekomendasi", "suara", "jurnal", "drive",
+    "rekomendasi", "suara", "jurnal", "drive",
     "search", "gambar", "neo4j", "coding", "github", "vercel_logs", "lokasi",
 }
 
@@ -342,8 +344,9 @@ async def detect_intent_async(text: str, chat_id: int | None = None) -> str | No
     if intent:
         return intent
 
-    # Jika pengguna mengirim pesan pendek (misal: 1-3 kata seperti "bumi", "bagaimana bumi"),
-    # dan percakapan sebelumnya membahas saham, klasifikasikan sebagai intent 'saham'.
+    # Jika pengguna mengirim pesan pendek (misal: 1-3 kata seperti "bumi", "surabaya"),
+    # dan percakapan sebelumnya membahas intent terkait (saham/cuaca), klasifikasikan
+    # sebagai kelanjutan intent tersebut agar jawaban (data) sesuai konteks.
     if chat_id:
         try:
             words = text.strip().split()
@@ -351,8 +354,13 @@ async def detect_intent_async(text: str, chat_id: int | None = None) -> str | No
                 history = await get_history(chat_id)
                 if history:
                     recent_texts = " ".join([m.get("text", "") for m in history[-3:]]).lower()
-                    if any(kw in recent_texts for kw in HEAVY_KEYWORDS["saham"]):
-                        return "saham"
+                    for cont_intent, keywords in (
+                        ("saham", HEAVY_KEYWORDS["saham"]),
+                        ("cuaca", HEAVY_KEYWORDS["cuaca"]),
+                        ("search", HEAVY_KEYWORDS["search"]),
+                    ):
+                        if any(kw in recent_texts for kw in keywords):
+                            return cont_intent
         except Exception as e:
             logger.warning("Error checking history for intent context: %s", str(e))
 

@@ -89,6 +89,17 @@ def _extract_city(message: str) -> Optional[dict]:
         stop = {"hari ini", "besok", "sekarang", "nanti", "ya", "dong", "kak", "nih", "saya", "aku"}
         if city and city not in stop:
             return {"city": city.title()}
+    # Pesan pendek tanpa pola (mis. balasan "surabaya" setelah Oline minta kota):
+    # dalam konteks intent cuaca, perlakukan sebagai nama kota.
+    words = [w for w in low.split() if w]
+    if 1 <= len(words) <= 3:
+        candidate = low.rstrip("?!.")
+        # Buang kualifikasi waktu di akhir ("sekarang", "hari ini", "besok", "nanti")
+        candidate = re.sub(r"\s+(sekarang|hari ini|besok|nanti|nih|ya|dong)$", "", candidate).strip()
+        # Hindari kata perintah/umum yang bukan kota
+        if not any(k in low for k in ("cuaca", "suhu", "panas", "hujan", "gimana", "berapa", "di ", "tolong", "cek")):
+            if candidate and not _is_definitional(candidate):
+                return {"city": candidate.title()}
     return None
 
 

@@ -79,6 +79,14 @@ class TestGrounding(unittest.TestCase):
             self.assertEqual(status, SKIP)
             mock.assert_not_called()
 
+    def test_cuaca_kota_polos(self):
+        """Balasan singkat ('surabaya') setelah Oline minta kota -> dianggap kota."""
+        from src.grounding import _extract_city
+        self.assertEqual(_extract_city("surabaya"), {"city": "Surabaya"})
+        self.assertEqual(_extract_city("jakarta sekarang"), {"city": "Jakarta"})
+        self.assertIsNone(_extract_city("cek cuaca"))
+        self.assertIsNone(_extract_city("tolong cek surabaya"))
+
     def _run(self, intent, message):
         return _run_sync(prepare_grounding, 123, intent, message)
 
