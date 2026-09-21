@@ -231,6 +231,20 @@ def _get_model_candidates() -> list[str]:
     return candidates[:2]
 
 
+def _generation_timeout(jalur: str) -> float:
+    """
+    Menentukan batas waktu generasi (detik) sesuai jalur.
+    Generasi landing page / tools butuh waktu jauh lebih lama daripada fast path;
+    timeout 8 detik hanya cocok untuk fast path, dan akan membuat landing page
+    gagal (Gemini/DeepInfra timed out) karena generasi HTML/CSS/JS yang panjang.
+    """
+    if jalur == "landing":
+        return 120.0
+    if jalur == "tools":
+        return 45.0
+    return 8.0
+
+
 async def _generate_content_with_fallback(
     system_prompt: str,
     tools: Optional[list[types.Tool]],
@@ -473,9 +487,9 @@ async def chat_with_oline(
         })
 
         try:
-            # 5. Generate response (dengan timeout 8 detik & automatic fallback)
+            # 5. Generate response (dengan timeout sesuai jalur & automatic fallback)
             response, used_model, tokens_used = await _generate_content_with_fallback(
-                system_prompt, tools, contents, timeout_seconds=8.0
+                system_prompt, tools, contents, timeout_seconds=_generation_timeout(jalur)
             )
             total_tokens_session = tokens_used
 
@@ -532,7 +546,7 @@ async def chat_with_oline(
 
                 # Generate lagi dengan function results
                 response, used_model, tokens_used = await _generate_content_with_fallback(
-                    system_prompt, tools, contents, timeout_seconds=8.0
+                    system_prompt, tools, contents, timeout_seconds=_generation_timeout(jalur)
                 )
                 total_tokens_session += tokens_used
 

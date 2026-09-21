@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/openai"
 
+# Batas waktu per panggilan DeepInfra. Generasi landing page lambat, jadi diberi
+# ruang cukup; tetap dibatasi agar fallback chain tidak menggantung berlebihan.
+DEEPINFRA_TIMEOUT = 150.0
+
 
 def _get_deepinfra_client():
     """Mengembalikan instance OpenAI client yang dikonfigurasi untuk DeepInfra."""
@@ -88,8 +92,10 @@ async def chat_deepinfra(
         kwargs["tool_choice"] = "auto"
 
     # Panggil pertama (dijalankan di thread terpisah agar tidak blocking)
-    response = await asyncio.to_thread(
-        client.chat.completions.create, **kwargs
+    # dengan batas waktu agar fallback chain tidak menggantung terlalu lama.
+    response = await asyncio.wait_for(
+        asyncio.to_thread(client.chat.completions.create, **kwargs),
+        timeout=DEEPINFRA_TIMEOUT,
     )
     response_message = response.choices[0].message
 
@@ -170,8 +176,9 @@ async def chat_deepinfra(
             "max_tokens": 4096,
         }
 
-        response = await asyncio.to_thread(
-            client.chat.completions.create, **follow_kwargs
+        response = await asyncio.wait_for(
+            asyncio.to_thread(client.chat.completions.create, **follow_kwargs),
+            timeout=DEEPINFRA_TIMEOUT,
         )
         response_message = response.choices[0].message
 

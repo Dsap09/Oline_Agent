@@ -447,11 +447,14 @@ async def call_model_with_fallback(
                     return res.strip()
 
             elif provider == "gemini" and os.environ.get("GEMINI_API_KEY", "").strip():
-                from src.gemini import _build_tools, _format_history_for_gemini, _generate_content_with_fallback
+                from src.gemini import _build_tools, _format_history_for_gemini, _generate_content_with_fallback, _generation_timeout
                 gemini_tools = _build_tools(tools) if tools else None
                 contents = _format_history_for_gemini(history)
                 contents.append({"role": "user", "parts": [{"text": user_message}]})
-                resp, _, _ = await _generate_content_with_fallback(system_prompt, gemini_tools, contents, timeout_seconds=8.0)
+                resp, _, _ = await _generate_content_with_fallback(
+                    system_prompt, gemini_tools, contents,
+                    timeout_seconds=_generation_timeout(jalur),
+                )
                 if hasattr(resp, "text") and resp.text and resp.text.strip():
                     res = resp.text.strip()
                     res_clean = clean_tool_calls(res)
