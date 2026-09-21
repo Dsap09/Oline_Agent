@@ -800,7 +800,7 @@ async def handle_message(
 
     # --- Async Landing Page Path (Anti Gantung & Notifikasi Progres Satu Pesan) ---
     if is_landing_page_generation_request(user_message, intent):
-        from src.handlers import delegate_to_worker, process_pending_task
+        from src.handlers import delegate_to_worker
         from src.kv import save_pending_task, save_progress_message_id
 
         # Kirim SATU pesan progres awal sesuai brief.md
@@ -834,13 +834,16 @@ async def handle_message(
                 message_id=msg_id,
                 delegated=False,
             )
-            asyncio.create_task(process_pending_task(target_chat_id=chat_id))
+            # Trigger endpoint background terpisah (invocation serverless baru yang
+            # tetap hidup) agar task diproses — bukan proses in-instance yang mati
+            # saat webhook /api/index mengembalikan 200.
+            from src.handlers import trigger_process_pending_endpoint
+            asyncio.create_task(trigger_process_pending_endpoint())
         return
 
     # --- Akademik (ERINE): Acknowledge First, Process Later (brief.md) ---
     # Intent akademik diproses di background agar tidak memblokir webhook (ERINE bisa lambat/timeout).
     if intent == "akademik":
-        from src.handlers import process_pending_task
         from src.kv import save_pending_task, save_progress_message_id
 
         progres_msg = await update.effective_chat.send_message(
@@ -859,13 +862,13 @@ async def handle_message(
             message_id=msg_id,
         )
 
-        asyncio.create_task(process_pending_task(target_chat_id=chat_id))
+        from src.handlers import trigger_process_pending_endpoint
+        asyncio.create_task(trigger_process_pending_endpoint())
         return
 
     # --- Intent berat lainnya: Acknowledge First, Process Later (anti 504 webhook) ---
     # Diproses di background agar webhook balas 200 cepat; hasil dikirim setelah selesai.
     if intent in HEAVY_BACKGROUND_INTENTS:
-        from src.handlers import process_pending_task
         from src.kv import save_pending_task, save_progress_message_id
 
         progres_msg = await update.effective_chat.send_message(
@@ -884,7 +887,8 @@ async def handle_message(
             message_id=msg_id,
         )
 
-        asyncio.create_task(process_pending_task(target_chat_id=chat_id))
+        from src.handlers import trigger_process_pending_endpoint
+        asyncio.create_task(trigger_process_pending_endpoint())
         return
 
     # Kirim "typing" action HANYA untuk Slow Path (fitur berat) untuk memangkas latensi Fast Path

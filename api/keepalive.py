@@ -5,6 +5,7 @@ Tidak import library berat apapun. Dilindungi secret header.
 
 import json
 import os
+import urllib.request
 from datetime import datetime
 
 
@@ -36,6 +37,21 @@ def app(environ, start_response):
         "endpoint": "keepalive",
         "time": datetime.now().isoformat(),
     }).encode("utf-8")
+
+    # Best-effort ping ke worker Render agar instance free tier tetap hangat
+    # (hindari cold start yang membuat delegasi lambat/timeout).
+    worker_url = os.environ.get("RENDER_WORKER_URL", "").strip().rstrip("/")
+    if worker_url:
+        try:
+            req = urllib.request.Request(
+                f"{worker_url}/health",
+                headers={"User-Agent": "oline-keepalive"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                _ = resp.read()
+        except Exception:
+            # Jangan sampai ping worker menggagalkan keep-alive Vercel.
+            pass
 
     start_response("200 OK", [
         ("Content-Type", "application/json"),

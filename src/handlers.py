@@ -69,9 +69,12 @@ async def delegate_to_worker(
         logger.warning("RENDER_WORKER_URL / OLINE_WORKER_KEY belum diset; tidak bisa delegate.")
         return False
 
+    # Timeout longgar untuk menahan cold start Render free tier (20-60 detik).
+    # connect=30 memastikan instance Render yang tidur sempat bangun sebelum diputus.
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        request_timeout = httpx.Timeout(90.0, connect=30.0)
+        async with httpx.AsyncClient(timeout=request_timeout) as client:
             resp = await client.post(
                 f"{worker_url}/process",
                 json={
@@ -88,6 +91,34 @@ async def delegate_to_worker(
             return ok
     except Exception as e:
         logger.warning("Gagal delegate ke Render: %s", str(e))
+        return False
+
+
+async def trigger_process_pending_endpoint() -> bool:
+    """
+    Memicu endpoint /api/process_pending secara mandiri (self-trigger) lewat invocation
+    serverless terpisah. Berguna sebagai fallback saat Render down: task yang tersimpan
+    di KV akan diproses oleh invocation ini, BUKAN proses in-instance yang mati saat
+    webhook /api/index mengembalikan 200.
+    """
+    base = (
+        os.environ.get("VERCEL_PROJECT_PRODUCTION_URL", "")
+        or os.environ.get("VERCEL_URL", "")
+    ).strip().rstrip("/")
+    if not base:
+        logger.warning("VERCEL_URL tidak tersedia; tidak bisa self-trigger /api/process_pending.")
+        return False
+    if not base.startswith("http"):
+        base = f"https://{base}"
+    url = f"{base}/api/process_pending"
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(url)
+            logger.info("Self-trigger /api/process_pending: status=%s", resp.status_code)
+            return resp.status_code == 200
+    except Exception as e:
+        logger.warning("Gagal self-trigger /api/process_pending: %s", str(e))
         return False
 
 
