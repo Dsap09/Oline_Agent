@@ -345,22 +345,26 @@ async def detect_intent_async(text: str, chat_id: int | None = None) -> str | No
         return intent
 
     # Jika pengguna mengirim pesan pendek (misal: 1-3 kata seperti "bumi", "surabaya"),
-    # dan percakapan sebelumnya membahas intent terkait (saham/cuaca), klasifikasikan
-    # sebagai kelanjutan intent tersebut agar jawaban (data) sesuai konteks.
+    # arahkan ke intent yang PALING BARU dibahas (scan dari pesan terakhir), bukan
+    # prioritas tetap. Ini mencegah salah-routing (mis. jawaban kota untuk cuaca
+    # malah dikira saham karena riwayat lama mengandung ticker seperti "BBCA").
     if chat_id:
         try:
             words = text.strip().split()
             if len(words) <= 3:
                 history = await get_history(chat_id)
                 if history:
-                    recent_texts = " ".join([m.get("text", "") for m in history[-3:]]).lower()
-                    for cont_intent, keywords in (
+                    cont_map = [
                         ("saham", HEAVY_KEYWORDS["saham"]),
                         ("cuaca", HEAVY_KEYWORDS["cuaca"]),
                         ("search", HEAVY_KEYWORDS["search"]),
-                    ):
-                        if any(kw in recent_texts for kw in keywords):
-                            return cont_intent
+                    ]
+                    # Scan dari pesan terbaru; intent yang pertama cocok = yang paling baru dibahas.
+                    for msg in reversed(history[-5:]):
+                        msg_text = (msg.get("text", "") or "").lower()
+                        for cont_intent, keywords in cont_map:
+                            if any(kw in msg_text for kw in keywords):
+                                return cont_intent
         except Exception as e:
             logger.warning("Error checking history for intent context: %s", str(e))
 
