@@ -35,6 +35,7 @@ FEATURE_FLAGS_KEY = "feature_flags"
 FAILURE_COUNT_PREFIX = "failure_count"
 CLARIFY_PREFIX = "clarify"
 TOKEN_PREFIX = "token"
+PERSONA_PREFIX = "persona"
 
 
 
@@ -91,6 +92,22 @@ async def get_memory(chat_id: int) -> str:
     return ""
 
 
+async def get_persona(chat_id: int) -> str:
+    """Mengambil gaya persona terpilih user (default 'profesional')."""
+    key = f"{PERSONA_PREFIX}:{chat_id}"
+    result = await _kv_request(["GET", key])
+    if result and result.get("result"):
+        return str(result["result"])
+    return "profesional"
+
+
+async def set_persona(chat_id: int, style: str) -> bool:
+    """Menyimpan gaya persona terpilih user ke KV. TTL 30 hari."""
+    key = f"{PERSONA_PREFIX}:{chat_id}"
+    result = await _kv_request(["SET", key, style, "EX", "2592000"])
+    return result is not None
+
+
 async def save_memory(chat_id: int, memory_summary: str) -> bool:
     """
     Menyimpan ringkasan memori percakapan.
@@ -120,6 +137,18 @@ async def get_history(chat_id: int) -> list[dict]:
         except (json.JSONDecodeError, TypeError):
             return []
     return []
+
+
+async def clear_history(chat_id: int) -> bool:
+    """
+    Menghapus riwayat percakapan user (key: history:<chat_id>).
+    Dipakai command /clear untuk reset konteks dari awal.
+    """
+    key = f"{HISTORY_PREFIX}:{chat_id}"
+    result = await _kv_request(["DEL", key])
+    if result is not None:
+        logger.info("History cleared for chat_id %s", chat_id)
+    return result is not None
 
 
 async def save_history(chat_id: int, history: list[dict]) -> bool:

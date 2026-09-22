@@ -189,6 +189,17 @@ async def _build_system_prompt_async(memory: str, user_name: str = "Teman", chat
     except Exception as e:
         logger.warning("Gagal menambahkan konteks grounding ke prompt: %s", str(e))
 
+    # Gaya komunikasi pilihan user (dari command /persona)
+    try:
+        from src.kv import get_persona
+        from src.personas import PERSONA_STYLES
+        style = await get_persona(chat_id)
+        style_text = PERSONA_STYLES.get(style)
+        if style_text:
+            prompt += f"\n\n## Gaya Komunikasi Pilihan Pengguna\n{style_text}"
+    except Exception as e:
+        logger.warning("Gagal menambahkan persona ke prompt: %s", str(e))
+
     return prompt
 
 

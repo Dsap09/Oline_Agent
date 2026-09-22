@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.bot import is_skip_request, is_retry_request
+from src.bot import _is_casual_or_command, is_skip_request, is_retry_request
 from src.kv import save_pending_task, update_pending_task_retry_count
 
 
@@ -24,6 +24,24 @@ class TestPendingTaskConfirmation(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(is_skip_request("abaikan aja"))
         self.assertFalse(is_skip_request("coba lagi"))
         self.assertFalse(is_skip_request("buatkan website"))
+
+    def test_is_skip_request_clear_stop(self):
+        """Tes pendeteksian perintah clear/stop task & penolakan topik (anti loop saham)."""
+        self.assertTrue(is_skip_request("clear task"))
+        self.assertTrue(is_skip_request("stop task"))
+        self.assertTrue(is_skip_request("reset"))
+        self.assertTrue(is_skip_request("berhenti"))
+        self.assertTrue(is_skip_request("aku ga bahas saham"))
+        self.assertTrue(is_skip_request("aku nggak bahas saham"))
+
+    def test_is_casual_or_command(self):
+        """Sapaan/perintah kontrol tidak boleh diarahkan ke intent berat lewat riwayat."""
+        self.assertTrue(_is_casual_or_command("hi"))
+        self.assertTrue(_is_casual_or_command("clear task"))
+        self.assertTrue(_is_casual_or_command("stop"))
+        self.assertTrue(_is_casual_or_command("status"))
+        self.assertFalse(_is_casual_or_command("bumi"))
+        self.assertFalse(_is_casual_or_command("surabaya"))
 
     def test_is_retry_request(self):
         """Tes pendeteksian instruksi retry."""

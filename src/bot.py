@@ -9,9 +9,10 @@ import os
 import re
 from typing import Optional
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -20,7 +21,14 @@ from telegram.ext import (
 
 from src.gemini import chat_with_oline, retry_pending_task
 
-from src.kv import check_rate_limit, get_history, save_journal
+from src.kv import (
+    check_rate_limit,
+    clear_history,
+    clear_pending_task,
+    get_history,
+    get_pending_task,
+    save_journal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +57,25 @@ def create_application() -> Application:
     # Register handlers
     application.add_handler(CommandHandler("start", handle_start))
     application.add_handler(CommandHandler("help", handle_help))
+    application.add_handler(CommandHandler("menu", handle_menu))
+    application.add_handler(CommandHandler("clear", handle_clear))
+    application.add_handler(CommandHandler("batal", handle_batal))
+    application.add_handler(CommandHandler("status", handle_status_command))
+    application.add_handler(CommandHandler("cuaca", handle_cuaca))
+    application.add_handler(CommandHandler("saham", handle_saham))
+    application.add_handler(CommandHandler("cari", handle_cari))
+    application.add_handler(CommandHandler("gambar", handle_gambar))
+    application.add_handler(CommandHandler("kuota", handle_kuota))
+    application.add_handler(CommandHandler("list", handle_list))
+    application.add_handler(CommandHandler("preview", handle_preview))
+    application.add_handler(CommandHandler("landing", handle_landing))
+    application.add_handler(CommandHandler("deploy", handle_deploy))
+    application.add_handler(CommandHandler("tasks", handle_tasks))
+    application.add_handler(CommandHandler("fitur", handle_fitur))
+    application.add_handler(CommandHandler("aktifkan", handle_aktifkan))
+    application.add_handler(CommandHandler("matikan", handle_matikan))
+    application.add_handler(CommandHandler("log", handle_log))
+    application.add_handler(CommandHandler("persona", handle_persona))
     application.add_handler(CommandHandler("jurnal", handle_jurnal_command))
     application.add_handler(CommandHandler("set_token", handle_set_token))
     application.add_handler(
@@ -57,6 +84,7 @@ def create_application() -> Application:
     application.add_handler(
         MessageHandler(filters.Document.ALL | filters.PHOTO, handle_file_message)
     )
+    application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
@@ -76,30 +104,600 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "💬 Pertanyaan & diskusi informasi\n"
         "🎬 Rekomendasi film & musik\n"
         "🌤️ Informasi cuaca terkini\n"
+        "📈 Cek saham & IHSG\n"
         "📔 Catatan jurnal & memori\n"
+        "🔍 Cari informasi di internet\n"
         "🌐 Preview & deploy landing page\n\n"
-        "Silakan langsung sampaikan permintaan Anda secara jelas!"
+        "Ketik /help untuk melihat daftar semua perintah,\n"
+        "atau cukup ngobrol langsung seperti biasa!"
     )
     await update.effective_chat.send_message(welcome_text)
 
 
+COMMAND_HELP_DETAIL = {
+    "start": "Sambutan & onboarding Oline.",
+    "help": "Daftar semua perintah. Contoh: /help cuaca",
+    "menu": "Tampilkan menu interaktif (tombol).",
+    "clear": "Bersihkan konteks percakapan & pending task.",
+    "batal": "Batalkan task yang sedang berjalan.",
+    "status": "Lihat status task aktif & kuota AI.",
+    "cuaca": "Cek cuaca. Format: /cuaca <kota>",
+    "saham": "Cek harga saham. Format: /saham <ticker>",
+    "cari": "Cari informasi di internet. Format: /cari <topik>",
+    "gambar": "Cari & kirim gambar. Format: /gambar <topik>",
+    "kuota": "Cek kuota pemakaian AI.",
+    "list": "Lihat daftar deployment di Vercel.",
+    "preview": "Lihat daftar preview landing page yang aktif.",
+    "landing": "Buat landing page. Format: /landing <deskripsi>",
+    "deploy": "Deploy landing page ke Vercel.",
+    "tasks": "Lihat task aktif.",
+    "fitur": "Lihat status kesehatan semua fitur.",
+    "aktifkan": "Aktifkan fitur. Format: /aktifkan <fitur>",
+    "matikan": "Nonaktifkan fitur. Format: /matikan <fitur>",
+    "log": "Lihat analisis log error Vercel.",
+    "persona": "Atur gaya komunikasi. Format: /persona <gaya>",
+    "jurnal": "Simpan catatan jurnal. Format: /jurnal <teks>",
+    "set_token": "Simpan token layanan. Format: /set_token <layanan> <token>",
+}
+
+COMMAND_HELP_TEXT = (
+    "Berikut adalah perintah yang bisa kamu pakai:\n\n"
+    "Utilitas\n"
+    "/start — sambutan\n"
+    "/help <cmd> — bantuan\n"
+    "/menu — menu interaktif\n"
+    "/clear — bersihkan konteks & task\n"
+    "/batal — batalkan task\n"
+    "/status — status task & kuota\n\n"
+    "Tools\n"
+    "/cuaca <kota> — cek cuaca\n"
+    "/saham <ticker> — cek saham\n"
+    "/cari <topik> — cari internet\n"
+    "/gambar <topik> — cari gambar\n"
+    "/kuota — cek kuota AI\n"
+    "/list — daftar deployment Vercel\n"
+    "/preview — daftar preview aktif\n"
+    "/jurnal <teks> — catat jurnal\n\n"
+
+    "Task Berat\n"
+    "/landing <deskripsi> — buat landing page\n"
+    "/deploy — deploy landing page\n"
+    "/tasks — lihat task aktif\n"
+    "/batal — batalkan task\n\n"
+
+    "Pengaturan\n"
+    "/fitur — status semua fitur\n"
+    "/aktifkan <fitur> — aktifkan fitur\n"
+    "/matikan <fitur> — nonaktifkan fitur\n"
+    "/persona <gaya> — atur gaya komunikasi\n"
+    "/log — lihat log error Vercel\n\n"
+    "Ketik /help <perintah> untuk detail, misal: /help cuaca\n"
+    "Atau cukup ngobrol langsung seperti biasa!"
+)
+
+
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handler untuk command /help."""
+    """Handler untuk command /help [command]."""
     if not update.effective_chat:
         return
 
-    help_text = (
-        "Berikut adalah beberapa layanan yang dapat saya bantu:\n\n"
-        "💬 Chat & Informasi — Pertanyaan umum atau analisis data\n"
-        "🎬 Rekomendasi Film — \"rekomendasi film horor\"\n"
-        "🎵 Rekomendasi Lagu — \"cari lagu klasik\"\n"
-        "🌤️ Informasi Cuaca — \"cuaca besok di Bandung\"\n"
-        "📈 Saham & IHSG — \"cek saham BBCA\" / \"IHSG hari ini\"\n"
-        "📔 Jurnal — /jurnal [catatan] atau \"catat jurnal hari ini: ...\"\n"
-        "📋 Rekap Jurnal — \"rekap jurnal minggu ini\"\n\n"
-        "Anda dapat menyampaikan permintaan secara langsung."
+    args = context.args or []
+    if args:
+        cmd = args[0].lstrip("/").lower()
+        detail = COMMAND_HELP_DETAIL.get(cmd)
+        if detail:
+            await update.effective_chat.send_message(
+                f"<b>/{cmd}</b> — {detail}", parse_mode="HTML"
+            )
+            return
+        await update.effective_chat.send_message(
+            f"Maaf, perintah '/{cmd}' tidak dikenal. Ketik /help untuk daftarnya."
+        )
+        return
+
+    await update.effective_chat.send_message(COMMAND_HELP_TEXT, parse_mode="Markdown")
+
+
+MENU_KEYBOARD = InlineKeyboardMarkup([
+    [InlineKeyboardButton("Cuaca", callback_data="cmd:cuaca"),
+     InlineKeyboardButton("Saham", callback_data="cmd:saham")],
+    [InlineKeyboardButton("Cari", callback_data="cmd:cari"),
+     InlineKeyboardButton("Gambar", callback_data="cmd:gambar")],
+    [InlineKeyboardButton("Status", callback_data="cmd:status"),
+     InlineKeyboardButton("Clear", callback_data="cmd:clear")],
+    [InlineKeyboardButton("Batal Task", callback_data="cmd:batal"),
+     InlineKeyboardButton("Kuota", callback_data="cmd:kuota")],
+    [InlineKeyboardButton("Persona", callback_data="cmd:persona"),
+     InlineKeyboardButton("Fitur", callback_data="cmd:fitur")],
+])
+
+
+async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /menu — menu interaktif via inline keyboard."""
+    if not update.effective_chat:
+        return
+    await update.effective_chat.send_message(
+        "Pilih perintah yang kamu butuhkan:", reply_markup=MENU_KEYBOARD
     )
-    await update.effective_chat.send_message(help_text, parse_mode="Markdown")
+
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk aksi tombol inline (dari /menu)."""
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    data = query.data or ""
+    if not data.startswith("cmd:"):
+        return
+    cmd = data[4:].strip()
+    chat_id = query.message.chat.id if query.message and query.message.chat else None
+    if not chat_id:
+        return
+
+    # Command yang butuh input: balas instruksi (tidak bisa via tombol)
+    if cmd in ("cuaca", "saham", "cari", "gambar"):
+        hint = {
+            "cuaca": "Ketik: /cuaca <kota>  (contoh: /cuaca Jakarta)",
+            "saham": "Ketik: /saham <ticker>  (contoh: /saham BBCA)",
+            "cari": "Ketik: /cari <topik>  (contoh: /cari berita terbaru)",
+            "gambar": "Ketik: /gambar <topik>  (contoh: /gambar pemandangan alam)",
+        }[cmd]
+        await query.message.reply_text(hint)
+        return
+
+    # Command aksi langsung
+    if cmd == "clear":
+        await _do_clear(chat_id, query.message)
+    elif cmd == "batal":
+        await _do_batal(chat_id, query.message)
+    elif cmd == "status":
+        await _do_status(chat_id, query.message)
+    elif cmd == "kuota":
+        await _do_kuota(chat_id, query.message)
+    elif cmd == "persona":
+        from src.personas import PERSONA_STYLES
+        await query.message.reply_text(
+            "Gaya komunikasi yang tersedia:\n"
+            + "\n".join(f"• /persona {s}" for s in PERSONA_STYLES)
+        )
+    elif cmd == "fitur":
+        from src.tools import execute_check_feature_health
+        await query.message.reply_text(await execute_check_feature_health())
+
+
+async def handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /clear — bersihkan konteks & pending task."""
+    if not update.effective_chat:
+        return
+    await _do_clear(update.effective_chat.id, update.effective_chat)
+
+
+async def _do_clear(chat_id: int, destination) -> None:
+    """Eksekusi pembersihan konteks & task (dipakai /clear & tombol menu)."""
+    from src.kv import clear_clarify_state, clear_progress_message_id, clear_task_start
+
+    await clear_history(chat_id)
+    await clear_pending_task(chat_id)
+    await clear_clarify_state(chat_id)
+    await clear_task_start(chat_id)
+    await clear_progress_message_id(chat_id)
+    await destination.send_message(
+        "✅ Konteks & pending task dibersihkan.\nSiap mulai dari awal!"
+    )
+
+
+async def handle_batal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /batal — batalkan task aktif."""
+    if not update.effective_chat:
+        return
+    await _do_batal(update.effective_chat.id, update.effective_chat)
+
+
+async def _do_batal(chat_id: int, destination) -> None:
+    """Batalkan pending task (dipakai /batal & tombol menu)."""
+    from src.kv import clear_task_start
+
+    task = await get_pending_task(chat_id)
+    if task:
+        perintah = (task.get("perintah") or task.get("message") or "").strip()
+        label = perintah if len(perintah) <= 60 else perintah[:60] + "..."
+        await clear_pending_task(chat_id)
+        await clear_task_start(chat_id)
+        await destination.send_message(
+            f"🛑 Task \"{label}\" dibatalkan.\nAda yang lain yang bisa aku bantu?"
+        )
+    else:
+        await destination.send_message(
+            "Tidak ada task yang sedang berjalan saat ini."
+        )
+
+
+async def handle_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /status — status task aktif & kuota AI."""
+    if not update.effective_chat:
+        return
+    await _do_status(update.effective_chat.id, update.effective_chat)
+
+
+async def _do_status(chat_id: int, destination) -> None:
+    """Tampilkan status task & kuota (dipakai /status & tombol menu)."""
+    from src.kv import clear_task_start
+    from src.tools import check_ai_quota
+
+    lines = []
+    task = await get_pending_task(chat_id)
+    if task:
+        perintah = (task.get("perintah") or task.get("message") or "task").strip()
+        label = perintah if len(perintah) <= 60 else perintah[:60] + "..."
+        lines.append(f"⏳ Task aktif: \"{label}\"")
+    else:
+        lines.append("⏳ Task aktif: tidak ada")
+
+    try:
+        kuota = await check_ai_quota(chat_id)
+        lines.append(f"\n{kuota}")
+    except Exception as e:
+        logger.warning("Gagal ambil kuota untuk /status: %s", str(e))
+        lines.append("\n🔋 Kuota AI: gagal diambil")
+
+    await destination.send_message("\n".join(lines))
+
+
+async def handle_cuaca(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /cuaca <kota>."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if not await check_rate_limit(chat_id):
+        await update.effective_chat.send_message("Mohon tunggu sebentar sebelum mengirim pesan kembali.")
+        return
+    city = " ".join(context.args or []).strip()
+    if not city:
+        await update.effective_chat.send_message(
+            "Format: /cuaca <kota>\nContoh: /cuaca Jakarta"
+        )
+        return
+    from src.tools import get_weather_forecast
+    res = await get_weather_forecast(city)
+    if not isinstance(res, dict):
+        await update.effective_chat.send_message("Gagal mendapatkan data cuaca.")
+        return
+    if "error" in res:
+        await update.effective_chat.send_message(res["error"])
+        return
+    await update.effective_chat.send_message(
+        f"🌤️ Cuaca {res['city']} ({res['date']})\n"
+        f"🌡️ Suhu: {res['temp']}°C (min {res['temp_min']}° / maks {res['temp_max']}°)\n"
+        f"☁️ Kondisi: {res['condition']}\n"
+        f"💧 Kelembapan: {res['humidity']}%\n"
+        f"💨 Angin: {res['wind_speed']} m/s"
+    )
+
+
+async def handle_saham(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /saham <ticker>."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if not await check_rate_limit(chat_id):
+        await update.effective_chat.send_message("Mohon tunggu sebentar sebelum mengirim pesan kembali.")
+        return
+    ticker = " ".join(context.args or []).strip()
+    if not ticker:
+        await update.effective_chat.send_message(
+            "Format: /saham <ticker>\nContoh: /saham BBCA"
+        )
+        return
+    from src.tools import get_stock_price
+    res = await get_stock_price(ticker)
+    if not isinstance(res, dict):
+        await update.effective_chat.send_message("Gagal mendapatkan data saham.")
+        return
+    if "error" in res:
+        await update.effective_chat.send_message(res["error"])
+        return
+    await update.effective_chat.send_message(res.get("formatted_result") or str(res))
+
+
+async def handle_cari(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /cari <topik>."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if not await check_rate_limit(chat_id):
+        await update.effective_chat.send_message("Mohon tunggu sebentar sebelum mengirim pesan kembali.")
+        return
+    query = " ".join(context.args or []).strip()
+    if not query:
+        await update.effective_chat.send_message(
+            "Format: /cari <topik>\nContoh: /cari berita teknologi terbaru"
+        )
+        return
+    from src.tools import search_internet
+    res = await search_internet(query)
+    if isinstance(res, dict) and res.get("error"):
+        await update.effective_chat.send_message(res["error"])
+        return
+    results = (res or {}).get("results", "") if isinstance(res, dict) else str(res)
+    if not results:
+        await update.effective_chat.send_message("Tidak ada hasil untuk pencarian itu.")
+        return
+    text = f"🔍 Hasil pencarian: {query}\n\n{results}"
+    if len(text) > 4096:
+        text = text[:4096]
+    await update.effective_chat.send_message(text)
+
+
+async def handle_gambar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /gambar <topik>."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if not await check_rate_limit(chat_id):
+        await update.effective_chat.send_message("Mohon tunggu sebentar sebelum mengirim pesan kembali.")
+        return
+    query = " ".join(context.args or []).strip()
+    if not query:
+        await update.effective_chat.send_message(
+            "Format: /gambar <topik>\nContoh: /gambar pemandangan alam"
+        )
+        return
+    from src.tools import search_and_send_image
+    res = await search_and_send_image(chat_id, query)
+    if isinstance(res, dict) and res.get("error"):
+        await update.effective_chat.send_message(res["error"])
+        return
+    if isinstance(res, dict) and res.get("status") == "success":
+        return
+    msg = (res or {}).get("message") if isinstance(res, dict) else None
+    if msg:
+        await update.effective_chat.send_message(msg)
+        return
+    await update.effective_chat.send_message("Gambar berhasil dikirim ya!")
+
+
+async def handle_kuota(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /kuota — cek kuota pemakaian AI."""
+    if not update.effective_chat:
+        return
+    await _do_kuota(update.effective_chat.id, update.effective_chat)
+
+
+async def _do_kuota(chat_id: int, destination) -> None:
+    """Tampilkan kuota AI (dipakai /kuota & tombol menu)."""
+    from src.tools import check_ai_quota
+    try:
+        report = await check_ai_quota(chat_id)
+    except Exception as e:
+        logger.warning("Gagal ambil kuota: %s", str(e))
+        report = "Gagal mengambil data kuota AI."
+    await destination.send_message(report)
+
+
+async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /list — daftar deployment di Vercel."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if not await check_rate_limit(chat_id):
+        await update.effective_chat.send_message("Mohon tunggu sebentar sebelum mengirim pesan kembali.")
+        return
+    from src.tools import list_vercel_deployments
+    res = await list_vercel_deployments()
+    if not isinstance(res, dict):
+        await update.effective_chat.send_message("Gagal mengambil daftar deployment.")
+        return
+    if res.get("error"):
+        await update.effective_chat.send_message(res["error"])
+        return
+    if res.get("message"):
+        await update.effective_chat.send_message(res["message"])
+        return
+
+    deployments = res.get("deployments", [])
+    lines = [f"🚀 Deployment Vercel ({res.get('total', len(deployments))}):"]
+    for i, d in enumerate(deployments, 1):
+        name = d.get("name", "tanpa nama")
+        url = d.get("url", "")
+        lines.append(f"{i}. {name}")
+        if url:
+            lines.append(f"   {url}")
+    text = "\n".join(lines)
+    if len(text) > 4096:
+        text = text[:4096]
+    await update.effective_chat.send_message(text)
+
+
+async def handle_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /preview — daftar preview landing page yang aktif."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if not await check_rate_limit(chat_id):
+        await update.effective_chat.send_message("Mohon tunggu sebentar sebelum mengirim pesan kembali.")
+        return
+    from src.github_tools import list_github_previews
+    res = await list_github_previews()
+    if not isinstance(res, dict):
+        await update.effective_chat.send_message("Gagal mengambil daftar preview.")
+        return
+    if res.get("error"):
+        await update.effective_chat.send_message(res["error"])
+        return
+    if res.get("message"):
+        await update.effective_chat.send_message(res["message"])
+        return
+
+    previews = res.get("previews", [])
+    lines = [f"🖼️ Preview aktif ({res.get('total', len(previews))}):"]
+    for i, p in enumerate(previews, 1):
+        slug = p.get("slug", "")
+        url = p.get("url", "")
+        lines.append(f"{i}. {slug}")
+        if url:
+            lines.append(f"   {url}")
+    text = "\n".join(lines)
+    if len(text) > 4096:
+        text = text[:4096]
+    await update.effective_chat.send_message(text)
+
+
+async def handle_landing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /landing <deskripsi> — buat landing page di background."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if not await check_rate_limit(chat_id):
+        await update.effective_chat.send_message("Mohon tunggu sebentar sebelum mengirim pesan kembali.")
+        return
+    desc = " ".join(context.args or []).strip()
+    if not desc:
+        await update.effective_chat.send_message(
+            "Format: /landing <deskripsi>\nContoh: /landing landing page untuk kafe Sakura Brew"
+        )
+        return
+    user_name = "Teman"
+    if update.effective_user and update.effective_user.first_name:
+        user_name = update.effective_user.first_name
+    await _route_heavy_task(
+        update.effective_chat,
+        chat_id,
+        desc,
+        "preview",
+        user_name,
+        "⏳ Permintaan diterima, mulai memproses landing page...",
+    )
+
+
+async def handle_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /deploy — deploy landing page di background."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if not await check_rate_limit(chat_id):
+        await update.effective_chat.send_message("Mohon tunggu sebentar sebelum mengirim pesan kembali.")
+        return
+    perintah = " ".join(context.args or []).strip() or "deploy landing page yang sudah dibuat"
+    user_name = "Teman"
+    if update.effective_user and update.effective_user.first_name:
+        user_name = update.effective_user.first_name
+    await _route_heavy_task(
+        update.effective_chat,
+        chat_id,
+        perintah,
+        "deploy",
+        user_name,
+        "⏳ Mulai deploy landing page ke Vercel...",
+    )
+
+
+async def handle_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /tasks — lihat task aktif."""
+    if not update.effective_chat:
+        return
+    chat_id = update.effective_chat.id
+    task = await get_pending_task(chat_id)
+    if task:
+        await update.effective_chat.send_message(build_task_status_message(task))
+    else:
+        await update.effective_chat.send_message(
+            "Saat ini tidak ada task yang sedang diproses."
+        )
+
+
+async def handle_fitur(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /fitur — status kesehatan semua fitur."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if not await check_rate_limit(chat_id):
+        await update.effective_chat.send_message("Mohon tunggu sebentar sebelum mengirim pesan kembali.")
+        return
+    from src.tools import execute_check_feature_health
+    report = await execute_check_feature_health()
+    await update.effective_chat.send_message(report)
+
+
+async def handle_aktifkan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /aktifkan <fitur>."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if not await check_rate_limit(chat_id):
+        await update.effective_chat.send_message("Mohon tunggu sebentar sebelum mengirim pesan kembali.")
+        return
+    feature = " ".join(context.args or []).strip()
+    if not feature:
+        await update.effective_chat.send_message(
+            "Format: /aktifkan <fitur>\nKetik /fitur untuk lihat daftar fitur."
+        )
+        return
+    from src.tools import execute_toggle_feature
+    await update.effective_chat.send_message(await execute_toggle_feature(feature, True))
+
+
+async def handle_matikan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /matikan <fitur>."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if not await check_rate_limit(chat_id):
+        await update.effective_chat.send_message("Mohon tunggu sebentar sebelum mengirim pesan kembali.")
+        return
+    feature = " ".join(context.args or []).strip()
+    if not feature:
+        await update.effective_chat.send_message(
+            "Format: /matikan <fitur>\nKetik /fitur untuk lihat daftar fitur."
+        )
+        return
+    from src.tools import execute_toggle_feature
+    await update.effective_chat.send_message(await execute_toggle_feature(feature, False))
+
+
+async def handle_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /log — analisis log error Vercel terbaru."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if not await check_rate_limit(chat_id):
+        await update.effective_chat.send_message("Mohon tunggu sebentar sebelum mengirim pesan kembali.")
+        return
+    from src.vercel_logs import read_vercel_logs
+    report = await read_vercel_logs("error")
+    await update.effective_chat.send_message(report)
+
+
+async def handle_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /persona [gaya] — atur gaya komunikasi Oline."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    from src.personas import PERSONA_STYLES
+
+    style = " ".join(context.args or []).strip().lower()
+    if not style:
+        await update.effective_chat.send_message(
+            "Gaya komunikasi yang tersedia:\n"
+            + "\n".join(f"• /persona {s}" for s in PERSONA_STYLES)
+            + "\n\nContoh: /persona genz"
+        )
+        return
+
+    if style not in PERSONA_STYLES:
+        await update.effective_chat.send_message(
+            f"Gaya '{style}' tidak dikenal. Pilihan: {', '.join(PERSONA_STYLES)}"
+        )
+        return
+
+    from src.kv import set_persona
+    ok = await set_persona(chat_id, style)
+    if ok:
+        await update.effective_chat.send_message(
+            f"✅ Gaya komunikasi diubah ke: {style}.\nAku akan mulai bicara dengan gaya itu sekarang."
+        )
+    else:
+        await update.effective_chat.send_message("Gagal menyimpan gaya persona. Coba lagi nanti.")
 
 
 async def handle_set_token(
@@ -336,6 +934,37 @@ def detect_intent(text: str) -> str | None:
     return None
 
 
+_CASUAL_OR_COMMAND_WORDS = {
+    "hi", "hallo", "halo", "hai", "hello", "hey", "pagi", "siang", "sore", "malam",
+    "makasih", "terima", "thanks", "ok", "oke", "sip", "ya", "iya", "batal",
+    "cancel", "reset", "stop", "skip", "clear", "berhenti", "hentikan",
+    "status", "kabar", "progres", "udah", "sudah", "coba", "ulang",
+}
+
+
+def _is_casual_or_command(text: str) -> bool:
+    """
+    Mendeteksi apakah pesan pendek hanyalah sapaan / perintah kontrol (skip, status,
+    retry, batal), bukan follow-up topik. Pesan seperti ini tidak boleh diarahkan ke
+    intent berat lewat scan riwayat, agar tidak nyangkut ke loop intent (mis. saham).
+    """
+    if not text:
+        return True
+    low = text.lower().strip()
+    if is_skip_request(low) or is_status_request(low) or is_retry_request(low):
+        return True
+    words = low.split()
+    if not words:
+        return True
+    # Sapaan tunggal / perintah singkat
+    if len(words) == 1 and words[0] in _CASUAL_OR_COMMAND_WORDS:
+        return True
+    # Frasa perintah umum (2-3 kata) yang berisi kata kontrol
+    if any(w in low for w in ("clear task", "stop task", "batalin", "batalkan", "nggak usah", "gak usah", "tidak usah")):
+        return True
+    return False
+
+
 async def detect_intent_async(text: str, chat_id: int | None = None) -> str | None:
     """
     Mendeteksi intent dengan konteks percakapan sebelumnya.
@@ -351,7 +980,10 @@ async def detect_intent_async(text: str, chat_id: int | None = None) -> str | No
     if chat_id:
         try:
             words = text.strip().split()
-            if len(words) <= 3:
+            # Jangan arahkan sapaan/balasan singkat ke intent berat lewat riwayat.
+            # (mis. "hi", "clear task", "stop") — itu bukan follow-up topik, jadi biarkan
+            # di fast path agar tidak nyangkut ke loop intent (mis. "Ticker saham apa?").
+            if len(words) <= 3 and not _is_casual_or_command(text):
                 history = await get_history(chat_id)
                 if history:
                     cont_map = [
@@ -388,6 +1020,10 @@ SKIP_KEYWORDS = [
     "skip", "gak usah", "gak usah deh", "nggak usah", "batal",
     "hentikan", "abaikan", "gausah", "tidak usah", "ndak usah",
     "cancle", "cancel", "nggak usah ya",
+    "clear task", "stop task", "reset", "berhenti",
+    "aku ga bahas", "aku nggak bahas", "aku gak bahas",
+    "nggak bahas", "gak bahas", "ngga bahas", "ga bahas",
+    "jangan bahas", "stop bahas", "ga ngomongin", "nggak ngomongin",
 ]
 
 RETRY_KEYWORDS = [
@@ -619,6 +1255,61 @@ def _extract_notion_note(text: str) -> Optional[tuple[str, str]]:
     return title, cleaned
 
 
+async def _route_heavy_task(
+    destination,
+    chat_id: int,
+    user_message: str,
+    intent: str,
+    user_name: str,
+    initial_text: str,
+) -> bool:
+    """
+    Menjalankan task berat (landing page / background intent) secara asynchronous:
+    kirim pesan progres awal, simpan pending task, lalu delegasi ke Render worker.
+    Jika worker down, fallback ke proses lokal via /api/process_pending.
+    Dipakai oleh handle_message & command task berat (/landing, /deploy).
+    """
+    from src.handlers import delegate_to_worker, trigger_process_pending_endpoint
+    from src.kv import save_pending_task, save_progress_message_id, save_task_start
+
+    # Catat waktu mulai task agar pesan progres menampilkan waktu proses nyata.
+    await save_task_start(chat_id)
+
+    # Kirim SATU pesan progres awal sesuai brief.md
+    progres_msg = await destination.send_message(initial_text)
+    msg_id = progres_msg.message_id if progres_msg else None
+    if msg_id:
+        await save_progress_message_id(chat_id, msg_id)
+
+    # Simpan pending task (ditandai delegated agar cron /api/process_pending tidak memproses ulang)
+    await save_pending_task(
+        chat_id=chat_id,
+        user_message=user_message,
+        intent=intent,
+        user_name=user_name,
+        message_id=msg_id,
+        delegated=True,
+    )
+
+    # Delegate ke Render worker; fallback ke proses lokal bila Render down
+    delegated = await delegate_to_worker(chat_id, user_message, intent, user_name, msg_id)
+    if not delegated:
+        logger.warning("Delegate ke Render gagal; fallback proses lokal chat=%s", chat_id)
+        await save_pending_task(
+            chat_id=chat_id,
+            user_message=user_message,
+            intent=intent,
+            user_name=user_name,
+            message_id=msg_id,
+            delegated=False,
+        )
+        # Trigger endpoint background terpisah (invocation serverless baru yang tetap
+        # hidup) agar task diproses — bukan proses in-instance yang mati saat webhook
+        # /api/index mengembalikan 200.
+        await trigger_process_pending_endpoint()
+    return True
+
+
 async def handle_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -692,6 +1383,16 @@ async def handle_message(
                     "Proses ini mengalami kendala teknis. Apakah Anda ingin mencoba ulang atau melewati task ini?"
                 )
                 return
+
+    # --- Perintah batal/berhenti tanpa task berjalan: konfirmasi & jangan di-routing ke intent berat ---
+    # Memastikan "clear task", "stop task", atau penolakan topik ("aku ga bahas saham") tidak
+    # disalahartikan sebagai intent berat (mis. saham) lewat deteksi intent / scan riwayat.
+    if is_skip_request(user_message):
+        await clear_pending_task(chat_id)
+        await update.effective_chat.send_message(
+            "Baik, task dibersihkan. Ada yang lain yang bisa aku bantu?"
+        )
+        return
 
     # Status task ditanyakan padahal tidak ada task berjalan
     if is_status_request(user_message) and not pending_task:
@@ -812,48 +1513,14 @@ async def handle_message(
 
     # --- Async Landing Page Path (Anti Gantung & Notifikasi Progres Satu Pesan) ---
     if is_landing_page_generation_request(user_message, intent):
-        from src.handlers import delegate_to_worker
-        from src.kv import save_pending_task, save_progress_message_id, save_task_start
-
-        # Catat waktu mulai task agar pesan progres menampilkan waktu proses nyata.
-        await save_task_start(chat_id)
-
-        # Kirim SATU pesan progres awal sesuai brief.md
-        progres_msg = await update.effective_chat.send_message(
-            "⏳ Permintaan diterima, mulai memproses..."
+        await _route_heavy_task(
+            update.effective_chat,
+            chat_id,
+            user_message,
+            intent,
+            user_name,
+            "⏳ Permintaan diterima, mulai memproses...",
         )
-        msg_id = progres_msg.message_id if progres_msg else None
-
-        if msg_id:
-            await save_progress_message_id(chat_id, msg_id)
-
-        # Simpan pending task (ditandai delegated agar cron /api/process_pending tidak memproses ulang)
-        await save_pending_task(
-            chat_id=chat_id,
-            user_message=user_message,
-            intent=intent,
-            user_name=user_name,
-            message_id=msg_id,
-            delegated=True,
-        )
-
-        # Delegate ke Render worker; fallback ke proses lokal bila Render down
-        delegated = await delegate_to_worker(chat_id, user_message, intent, user_name, msg_id)
-        if not delegated:
-            logger.warning("Delegate ke Render gagal; fallback proses lokal chat=%s", chat_id)
-            await save_pending_task(
-                chat_id=chat_id,
-                user_message=user_message,
-                intent=intent,
-                user_name=user_name,
-                message_id=msg_id,
-                delegated=False,
-            )
-            # Trigger endpoint background terpisah (invocation serverless baru yang
-            # tetap hidup) agar task diproses — bukan proses in-instance yang mati
-            # saat webhook /api/index mengembalikan 200.
-            from src.handlers import trigger_process_pending_endpoint
-            await trigger_process_pending_endpoint()
         return
 
     # --- Tool intent lainnya: delegasi ke worker Render (hangat) agar bebas cold start Vercel ---
@@ -861,43 +1528,15 @@ async def handle_message(
     # cek/renew token) dan list/delete deployment.
     _quick_local = intent in ("health", "kelola_fitur", "cek_token", "renew_token")
     _deploy_list_delete = intent == "deploy" and not is_landing_page_generation_request(user_message, intent)
-    if intent is not None and not _quick_local and not _deploy_list_delete:
-        from src.handlers import delegate_to_worker, trigger_process_pending_endpoint
-        from src.kv import save_pending_task, save_progress_message_id, save_task_start
-
-        # Catat waktu mulai agar pesan progres menampilkan waktu proses nyata.
-        await save_task_start(chat_id)
-
-        progres_msg = await update.effective_chat.send_message(
-            "⏳ Baik, permintaan kamu sedang diproses. Aku kabari setelah selesai ya."
+    if intent in HEAVY_BACKGROUND_INTENTS and not _quick_local and not _deploy_list_delete:
+        await _route_heavy_task(
+            update.effective_chat,
+            chat_id,
+            user_message,
+            intent,
+            user_name,
+            "⏳ Baik, permintaan kamu sedang diproses. Aku kabari setelah selesai ya.",
         )
-        msg_id = progres_msg.message_id if progres_msg else None
-        if msg_id:
-            await save_progress_message_id(chat_id, msg_id)
-
-        # Simpan pending task (ditandai delegated agar cron /api/process_pending tidak memproses ulang)
-        await save_pending_task(
-            chat_id=chat_id,
-            user_message=user_message,
-            intent=intent,
-            user_name=user_name,
-            message_id=msg_id,
-            delegated=True,
-        )
-
-        # Delegate ke Render worker; fallback ke proses lokal bila Render down
-        delegated = await delegate_to_worker(chat_id, user_message, intent, user_name, msg_id)
-        if not delegated:
-            logger.warning("Delegate ke Render gagal; fallback proses lokal chat=%s", chat_id)
-            await save_pending_task(
-                chat_id=chat_id,
-                user_message=user_message,
-                intent=intent,
-                user_name=user_name,
-                message_id=msg_id,
-                delegated=False,
-            )
-            await trigger_process_pending_endpoint()
         return
 
     # Kirim "typing" action HANYA untuk Slow Path (fitur berat) untuk memangkas latensi Fast Path

@@ -220,6 +220,41 @@ async def create_github_preview(
         return {"status": "error", "error": f"ERROR: Gagal membuat preview GitHub: {str(e)}", "url": None}
 
 
+async def list_github_previews() -> dict:
+    """
+    Mengambil daftar semua preview landing page yang aktif (branch GitHub berprefix 'preview/').
+    Setiap preview dibangun URL publik htmlpreview dari nama branch-nya.
+    """
+    token, owner, repo_name = _get_github_credentials()
+    if not token or not owner or not repo_name:
+        return {"error": "GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO belum dikonfigurasi."}
+
+    try:
+        from github import Github
+
+        g = Github(token)
+        repo = g.get_repo(f"{owner}/{repo_name}")
+        previews = []
+        for branch in repo.get_branches():
+            name = branch.name
+            if not name.startswith("preview/"):
+                continue
+            slug = name[len("preview/"):]
+            url = (
+                f"https://htmlpreview.github.io/?https://github.com/"
+                f"{owner}/{repo_name}/blob/{name}/index.html"
+            )
+            previews.append({"branch": name, "slug": slug, "url": url})
+
+        previews.sort(key=lambda p: p["slug"], reverse=True)
+        if not previews:
+            return {"message": "Belum ada preview yang tersimpan."}
+        return {"status": "success", "total": len(previews), "previews": previews}
+    except Exception as e:
+        logger.error("Gagal mengambil daftar preview GitHub: %s", str(e))
+        return {"error": f"Gagal mengambil daftar preview: {str(e)}"}
+
+
 async def delete_github_branch(branch_name: str) -> str:
     """
     Menghapus branch preview di GitHub (refs/heads/<branch>) secara bersih.
