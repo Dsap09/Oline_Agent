@@ -40,6 +40,9 @@ class TestPendingTaskConfirmation(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(_is_casual_or_command("clear task"))
         self.assertTrue(_is_casual_or_command("stop"))
         self.assertTrue(_is_casual_or_command("status"))
+        self.assertTrue(_is_casual_or_command("halo lin"))
+        self.assertTrue(_is_casual_or_command("selamat sore"))
+        self.assertTrue(_is_casual_or_command("pagi kak"))
         self.assertFalse(_is_casual_or_command("bumi"))
         self.assertFalse(_is_casual_or_command("surabaya"))
 

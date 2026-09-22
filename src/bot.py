@@ -941,6 +941,13 @@ _CASUAL_OR_COMMAND_WORDS = {
     "status", "kabar", "progres", "udah", "sudah", "coba", "ulang",
 }
 
+# Kata pembuka sapaan: jika pesan DIMULAI dengan ini (mis. "halo lin", "selamat sore"),
+# anggap sapaan/obrolan ringan, bukan follow-up topik (anti nyangkut ke intent berat).
+_GREETING_STARTS = {
+    "halo", "hallo", "hai", "hi", "hello", "hey", "pagi", "siang", "sore",
+    "malam", "selamat", "assalamualaikum", "permisi", "maaf",
+}
+
 
 def _is_casual_or_command(text: str) -> bool:
     """
@@ -955,6 +962,11 @@ def _is_casual_or_command(text: str) -> bool:
         return True
     words = low.split()
     if not words:
+        return True
+    # Pesan dibuka sapaan (termasuk multi-kata: "halo lin", "selamat sore kak") → sapaan.
+    # Aman: scan riwayat hanya dipakai bila detect_intent tidak menemukan kata kunci,
+    # jadi sapaan yang juga memuat permintaan nyata tetap tertangkap di tahap keyword.
+    if words[0] in _GREETING_STARTS:
         return True
     # Sapaan tunggal / perintah singkat
     if len(words) == 1 and words[0] in _CASUAL_OR_COMMAND_WORDS:
