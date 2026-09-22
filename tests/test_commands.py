@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Set token sebelum import src.bot agar create_application bisa dibangun di tes
 os.environ["TELEGRAM_BOT_TOKEN"] = "test:token"
 
-from src.bot import COMMAND_HELP_DETAIL
+from src.bot import COMMAND_HELP_DETAIL, detect_intent, detect_intent_async
 from src.kv import clear_history, get_persona, set_persona
 from src.personas import PERSONA_STYLES
 
@@ -88,6 +88,28 @@ class TestPersonaInPrompt(unittest.IsolatedAsyncioTestCase):
         from src.gemini import _build_system_prompt_async
         prompt = await _build_system_prompt_async("", user_name="Teman", chat_id=12345)
         self.assertIn("super ringkas", prompt)
+
+
+class TestSahamFalsePositive(unittest.IsolatedAsyncioTestCase):
+    """Pesan yang TIDAK menyebut saham tidak boleh ke-deteksi sebagai intent saham."""
+
+    def test_detect_intent_not_saham_for_casual(self):
+        self.assertIsNone(detect_intent("hi"))
+        self.assertIsNone(detect_intent("halo lin"))
+        self.assertIsNone(detect_intent("selamat sore"))
+
+    def test_detect_intent_ambiguous_word_no_longer_saham(self):
+        # "film" dulunya ticker di daftar saham → false positive; sekarang bukan.
+        self.assertNotEqual(detect_intent("film apa yang bagus"), "saham")
+
+    async def test_detect_intent_async_ignores_saham_history(self):
+        # Meskipun riwayat pernah membahas saham, pesan non-saham tetap fast path.
+        intent = await detect_intent_async("ada yang bisa kubantu?", chat_id=999)
+        self.assertIsNone(intent)
+
+    async def test_detect_intent_async_saham_real(self):
+        self.assertEqual(await detect_intent_async("cek saham BBCA", chat_id=999), "saham")
+        self.assertEqual(await detect_intent_async("berapa harga saham BBCA", chat_id=999), "saham")
 
 
 class TestApplicationRegistration(unittest.TestCase):

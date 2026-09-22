@@ -805,7 +805,7 @@ POPULAR_STOCK_TICKERS = [
     "indf", "bumi", "pgas", "wskt", "sido", "myrx", "goto", "buka", "ptba", "medc",
     "emtk", "brpt", "tpia", "inkp", "tkim", "doid", "mbma", "mka", "hrum", "essa",
     "aces", "bsde", "ctra", "smra", "pwon", "eraa", "cpin", "jpfa", "smgr", "intp",
-    "bren", "ammn", "cuan", "dewa", "film", "klbf", "mcap"
+    "bren", "ammn", "klbf", "mcap",
 ]
 
 HEAVY_KEYWORDS = {
@@ -866,7 +866,7 @@ HEAVY_KEYWORDS = {
     ],
     "search": ["search", "apa itu", "siapa", "kapan", "dimana", "berita", "definisi", "pengertian", "cari berita", "cari info"],
     "saham": [
-        "saham", "ihsg", "indeks", "index", "market", "bursa", "gainer", "loser",
+        "saham", "ihsg", "indeks", "bursa", "gainer", "loser",
     ] + POPULAR_STOCK_TICKERS,
     "coding": [
         "jalankan", "eksekusi", "run code", "jalankan kode", "execute",
@@ -934,85 +934,15 @@ def detect_intent(text: str) -> str | None:
     return None
 
 
-_CASUAL_OR_COMMAND_WORDS = {
-    "hi", "hallo", "halo", "hai", "hello", "hey", "pagi", "siang", "sore", "malam",
-    "makasih", "terima", "thanks", "ok", "oke", "sip", "ya", "iya", "batal",
-    "cancel", "reset", "stop", "skip", "clear", "berhenti", "hentikan",
-    "status", "kabar", "progres", "udah", "sudah", "coba", "ulang",
-}
-
-# Kata pembuka sapaan: jika pesan DIMULAI dengan ini (mis. "halo lin", "selamat sore"),
-# anggap sapaan/obrolan ringan, bukan follow-up topik (anti nyangkut ke intent berat).
-_GREETING_STARTS = {
-    "halo", "hallo", "hai", "hi", "hello", "hey", "pagi", "siang", "sore",
-    "malam", "selamat", "assalamualaikum", "permisi", "maaf",
-}
-
-
-def _is_casual_or_command(text: str) -> bool:
-    """
-    Mendeteksi apakah pesan pendek hanyalah sapaan / perintah kontrol (skip, status,
-    retry, batal), bukan follow-up topik. Pesan seperti ini tidak boleh diarahkan ke
-    intent berat lewat scan riwayat, agar tidak nyangkut ke loop intent (mis. saham).
-    """
-    if not text:
-        return True
-    low = text.lower().strip()
-    if is_skip_request(low) or is_status_request(low) or is_retry_request(low):
-        return True
-    words = low.split()
-    if not words:
-        return True
-    # Pesan dibuka sapaan (termasuk multi-kata: "halo lin", "selamat sore kak") → sapaan.
-    # Aman: scan riwayat hanya dipakai bila detect_intent tidak menemukan kata kunci,
-    # jadi sapaan yang juga memuat permintaan nyata tetap tertangkap di tahap keyword.
-    if words[0] in _GREETING_STARTS:
-        return True
-    # Sapaan tunggal / perintah singkat
-    if len(words) == 1 and words[0] in _CASUAL_OR_COMMAND_WORDS:
-        return True
-    # Frasa perintah umum (2-3 kata) yang berisi kata kontrol
-    if any(w in low for w in ("clear task", "stop task", "batalin", "batalkan", "nggak usah", "gak usah", "tidak usah")):
-        return True
-    return False
-
-
 async def detect_intent_async(text: str, chat_id: int | None = None) -> str | None:
     """
-    Mendeteksi intent dengan konteks percakapan sebelumnya.
+    Mendeteksi intent berdasarkan kata kunci pesan SAAT INI saja.
+    TIDAK lagi me-routing pesan pendek ke intent dari riwayat lama, karena itu
+    menyebabkan false-positive (mis. user tidak menyebut saham, tapi pesan pendeknya
+    tetap dianggap saham karena riwayat lama pernah membahas saham). Kelanjutan
+    percakapan (mis. jawaban "surabaya") tetap ditangani model lewat history di prompt.
     """
-    intent = detect_intent(text)
-    if intent:
-        return intent
-
-    # Jika pengguna mengirim pesan pendek (misal: 1-3 kata seperti "bumi", "surabaya"),
-    # arahkan ke intent yang PALING BARU dibahas (scan dari pesan terakhir), bukan
-    # prioritas tetap. Ini mencegah salah-routing (mis. jawaban kota untuk cuaca
-    # malah dikira saham karena riwayat lama mengandung ticker seperti "BBCA").
-    if chat_id:
-        try:
-            words = text.strip().split()
-            # Jangan arahkan sapaan/balasan singkat ke intent berat lewat riwayat.
-            # (mis. "hi", "clear task", "stop") — itu bukan follow-up topik, jadi biarkan
-            # di fast path agar tidak nyangkut ke loop intent (mis. "Ticker saham apa?").
-            if len(words) <= 3 and not _is_casual_or_command(text):
-                history = await get_history(chat_id)
-                if history:
-                    cont_map = [
-                        ("saham", HEAVY_KEYWORDS["saham"]),
-                        ("cuaca", HEAVY_KEYWORDS["cuaca"]),
-                        ("search", HEAVY_KEYWORDS["search"]),
-                    ]
-                    # Scan dari pesan terbaru; intent yang pertama cocok = yang paling baru dibahas.
-                    for msg in reversed(history[-5:]):
-                        msg_text = (msg.get("text", "") or "").lower()
-                        for cont_intent, keywords in cont_map:
-                            if any(kw in msg_text for kw in keywords):
-                                return cont_intent
-        except Exception as e:
-            logger.warning("Error checking history for intent context: %s", str(e))
-
-    return None
+    return detect_intent(text)
 
 
 RULE_KEYWORDS = [
