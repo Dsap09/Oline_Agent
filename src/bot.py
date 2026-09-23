@@ -822,6 +822,8 @@ HEAVY_KEYWORDS = {
         "edit dirimu", "tambahkan fitur", "bikin fitur", "buatkan fitur",
         "perbaiki bug", "self update", "update dirimu", "perbaiki kode",
         "ubah kode", "refactor", "tambah command", "perbaiki dirimu",
+        "opencode", "open code", "coba opencode", "pakai opencode",
+        "clinya", "open code cli",
     ],
     "github": [
         "github", "baca file github", "baca file repo", "push ke github", "pull request",
