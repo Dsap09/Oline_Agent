@@ -270,6 +270,9 @@ async def _slugify(text: str) -> str:
 async def _try_opencode_cli(perintah: str, plan: dict) -> tuple[bool, str]:
     """
     Menjalankan OpenCode CLI (hybrid primary) untuk mengeksekusi plan di repo checkout.
+    CLI HANYA mengedit file di working tree — git commit/push dikerjakan worker sendiri
+    (lebih andal: pakai GITHUB_TOKEN, tanpa bergantung pada credential/git identity CLI).
+
     Mengembalikan (success, output/log). Perlu runtime Node + binary opencode di worker;
     bila tidak tersedia, kembalikan (False, pesan) agar fallback tools dipakai.
     """
@@ -286,18 +289,18 @@ async def _try_opencode_cli(perintah: str, plan: dict) -> tuple[bool, str]:
     plan_text = json.dumps(plan, ensure_ascii=False, indent=2)
     prompt = (
         "Kerjakan perintah coding berikut di repository ini. "
-        "Buat branch git baru bernama oline-feature/<slug>. "
         f"Perintah user:\n{perintah}\n\n"
         f"Rencana yang sudah disetujui:\n{plan_text}\n\n"
-        "Setelah selesai, commit perubahan dan push branch ke origin. "
-        "Jangan push ke main."
+        "Edit file yang dibutuhkan di working tree ini (buat file baru bila perlu). "
+        "JANGAN menjalankan perintah git apapun (tidak perlu commit/push/branch). "
+        "Selesai cukup dengan melaporkan file apa saja yang kamu ubah."
     )
 
     cmd = []
     if use_npx:
-        cmd = [exe, "-y", "opencode-ai", "run", "--format", "json", prompt]
+        cmd = [exe, "-y", "opencode-ai", "run", "--auto", "--format", "json", prompt]
     else:
-        cmd = [exe, "run", "--format", "json", prompt]
+        cmd = [exe, "run", "--auto", "--format", "json", prompt]
 
     logger.info("[worker] Menjalankan OpenCode CLI: %s", " ".join(cmd[:6]))
     try:
@@ -308,10 +311,10 @@ async def _try_opencode_cli(perintah: str, plan: dict) -> tuple[bool, str]:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=900)
         except asyncio.TimeoutError:
             proc.kill()
-            return False, "OpenCode CLI timeout (> 10 menit)"
+            return False, "OpenCode CLI timeout (> 15 menit)"
 
         out = (stdout or b"").decode("utf-8", errors="replace")
         err = (stderr or b"").decode("utf-8", errors="replace")
@@ -321,6 +324,87 @@ async def _try_opencode_cli(perintah: str, plan: dict) -> tuple[bool, str]:
         return False, f"OpenCode CLI exit {proc.returncode}: {log[:2000]}"
     except Exception as e:
         return False, f"Gagal menjalankan OpenCode CLI: {str(e)}"
+
+
+async def _git_prepare_branch(branch: str) -> tuple[bool, str]:
+    """
+    Siapkan branch kerja dari origin/main SEBELUM CLI mengedit file, sehingga
+    perubahan CLI berada di branch tersebut (bukan menimpa main).
+    """
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    owner = os.environ.get("GITHUB_OWNER", "").strip()
+    repo_name = os.environ.get("GITHUB_REPO", "").strip()
+    if not token or not owner or not repo_name:
+        return False, "GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO belum diset di worker."
+
+    origin = f"https://x-access-token:{token}@github.com/{owner}/{repo_name}.git"
+    steps = [
+        (["git", "remote", "set-url", "origin", origin], "gagal set remote"),
+        (["git", "fetch", "origin"], "gagal fetch origin"),
+        (["git", "checkout", "-B", branch, "origin/main"], "gagal buat branch dari origin/main"),
+        (["git", "config", "user.email", "oline@bot.local"], "gagal config email"),
+        (["git", "config", "user.name", "Oline Bot"], "gagal config name"),
+    ]
+    for cmd, err_label in steps:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=_REPO_ROOT,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            return False, f"{err_label}: timeout {' '.join(cmd)}"
+        except Exception as e:
+            return False, f"{err_label}: {str(e)}"
+        if proc.returncode != 0:
+            out = (stdout or b"").decode("utf-8", errors="replace")
+            err = (stderr or b"").decode("utf-8", errors="replace")
+            return False, f"{err_label}: {(out + err).strip()[:500]}"
+    return True, f"Branch '{branch}' siap (dari origin/main)."
+
+
+async def _git_commit_and_push(branch: str, commit_msg: str) -> tuple[bool, str]:
+    """
+    Commit perubahan working tree (yang sudah diedit CLI di branch ini) lalu push ke GitHub.
+    Auth via GITHUB_TOKEN (URL remote diset dengan token), jadi tidak bergantung
+    pada credential git bawaan Render.
+    """
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    owner = os.environ.get("GITHUB_OWNER", "").strip()
+    repo_name = os.environ.get("GITHUB_REPO", "").strip()
+    if not token or not owner or not repo_name:
+        return False, "GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO belum diset di worker."
+
+    origin = f"https://x-access-token:{token}@github.com/{owner}/{repo_name}.git"
+    steps = [
+        (["git", "remote", "set-url", "origin", origin], "gagal set remote"),
+        (["git", "add", "-A"], "gagal git add"),
+        (["git", "commit", "-m", commit_msg], "gagal commit (mungkin tidak ada perubahan)"),
+        (["git", "push", "-u", "origin", branch], "gagal push"),
+    ]
+
+    for cmd, err_label in steps:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=_REPO_ROOT,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            out = (stdout or b"").decode("utf-8", errors="replace")
+            err = (stderr or b"").decode("utf-8", errors="replace")
+        except asyncio.TimeoutError:
+            return False, f"{err_label}: timeout menjalankan {' '.join(cmd)}"
+        except Exception as e:
+            return False, f"{err_label}: {str(e)}"
+        if proc.returncode != 0:
+            combined = f"{out}\n{err}".strip()
+            if "nothing to commit" in combined or "No changes" in combined:
+                return False, "Tidak ada perubahan yang perlu di-commit (CLI tidak mengedit apa pun)."
+            return False, f"{err_label}: {combined[:500]}"
+
+    return True, f"Branch '{branch}' berhasil di-commit & di-push."
 
 
 async def _run_coding_task(
@@ -357,21 +441,43 @@ async def _run_coding_task(
 
     try:
         if msg_id:
-            await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Clone repo...")
+            await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Menyiapkan repo & branch...")
 
-        # --- Primary: OpenCode CLI ---
-        ok, log = await _try_opencode_cli(perintah, state)
+        # --- Siapkan branch kerja dari origin/main (agar edit CLI tidak menimpa main) ---
+        prep_ok, prep_log = await _git_prepare_branch(branch)
+        if not prep_ok:
+            logger.warning("[worker] Gagal siapkan branch (%s); fallback ke tools.", prep_log[:300])
+            ok, log = False, prep_log
+        else:
+            if msg_id:
+                await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Menyiapkan repo & branch... ✅\n[3/5] Edit file (OpenCode CLI)... ⏳ (bisa 1-3 menit, ini yang pertama kali jalan)")
+
+            # --- Primary: OpenCode CLI (edit file di working tree, di branch ini) ---
+            ok, log = await _try_opencode_cli(perintah, state)
+
+            if ok:
+                if msg_id:
+                    await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Menyiapkan repo & branch... ✅\n[3/5] Edit file (OpenCode CLI)... ✅\n[4/5] Commit & push...")
+                git_ok, git_log = await _git_commit_and_push(
+                    branch, f"feat: {plan_summary[:60]}"
+                )
+                if not git_ok:
+                    logger.warning("[worker] Git commit/push gagal (%s); fallback ke tools.", git_log[:300])
+                    ok = False
+                    log = git_log
+            else:
+                logger.warning("[worker] OpenCode CLI gagal (%s), fallback ke tools.", log[:300])
+
         if not ok:
-            logger.warning("[worker] OpenCode CLI gagal (%s), fallback ke tools.", log[:300])
             from src.github_tools import create_github_branch, update_github_file
             if msg_id:
-                await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Clone repo... ✅\n[3/5] Edit file (fallback tools)...")
+                await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Menyiapkan repo & branch... ✅\n[3/5] Edit file (fallback tools)...")
             branch_res = await create_github_branch(branch)
             file_paths = state.get("file", [])
             if not file_paths:
                 file_paths = [path.strip() for path in log.splitlines() if path.strip().startswith(("src/", "api/", "tests/", "oline-worker/"))][:8] or ["src/tools.py"]
             if msg_id:
-                await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Clone repo... ✅\n[3/5] Edit file... ✅\n[4/5] Commit & push...")
+                await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Menyiapkan repo & branch... ✅\n[3/5] Edit file... ✅\n[4/5] Commit & push...")
             edited_any = False
             for fp in file_paths:
                 from src.github_tools import read_github_file, ai_fix_code
@@ -391,11 +497,11 @@ async def _run_coding_task(
                 await update_github_file(branch, "src/coding_agent_note.py", marker, f"feat: {plan_summary[:60]}")
         else:
             if msg_id:
-                await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Clone repo... ✅\n[3/5] Edit file (OpenCode CLI)... ✅\n[4/5] Commit & push...")
+                await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Menyiapkan repo & branch... ✅\n[3/5] Edit file (OpenCode CLI)... ✅\n[4/5] Commit & push... ✅\n[5/5] Membuat PR...")
 
         # --- Buat Pull Request ---
         if msg_id:
-            await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Clone repo... ✅\n[3/5] Edit file... ✅\n[4/5] Commit & push... ✅\n[5/5] Membuat PR...")
+            await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Menyiapkan repo & branch... ✅\n[3/5] Edit file... ✅\n[4/5] Commit & push... ✅\n[5/5] Membuat PR...")
 
         pr_title = f"feat: {plan_summary[:70]}"
         pr_body = (
