@@ -267,6 +267,18 @@ async def _slugify(text: str) -> str:
     return s[:40] or "fitur"
 
 
+def _extract_branch_from_msg(msg: str, fallback: str) -> str:
+    """
+    Mengekstrak nama branch sebenarnya dari pesan hasil create_github_branch
+    (yang mungkin menambahkan prefix oline-update/). Kembali ke fallback bila gagal.
+    """
+    import re
+    m = re.search(r"Branch '([^']+)'", msg or "")
+    if m:
+        return m.group(1)
+    return fallback
+
+
 async def _try_opencode_cli(perintah: str, plan: dict) -> tuple[bool, str]:
     """
     Menjalankan OpenCode CLI (hybrid primary) untuk mengeksekusi plan di repo checkout.
@@ -473,6 +485,10 @@ async def _run_coding_task(
             if msg_id:
                 await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Menyiapkan repo & branch... ✅\n[3/5] Edit file (fallback tools)...")
             branch_res = await create_github_branch(branch)
+            # Nama branch AKTUAL (create_github_branch bisa menambahkan prefix oline-update/).
+            actual_branch = _extract_branch_from_msg(branch_res, branch)
+            logger.info("[worker] Branch fallback aktual: %s (dari: %s)", actual_branch, branch_res)
+            branch = actual_branch
             file_paths = state.get("file", [])
             if not file_paths:
                 file_paths = [path.strip() for path in log.splitlines() if path.strip().startswith(("src/", "api/", "tests/", "oline-worker/"))][:8] or ["src/tools.py"]

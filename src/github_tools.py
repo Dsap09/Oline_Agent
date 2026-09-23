@@ -305,6 +305,20 @@ async def delete_github_branch(branch_name: str) -> str:
     except Exception as e:
         err = str(e)
         if "404" in err or "Not Found" in err:
+            # Fallback: branch mungkin dibuat dengan prefix oline-update/ (state lama).
+            if not clean_branch.startswith("oline-update/"):
+                alt = f"oline-update/{clean_branch}"
+                try:
+                    g = Github(token)
+                    repo = g.get_repo(f"{owner}/{repo_name}")
+                    ref = repo.get_git_ref(f"heads/{alt}")
+                    ref.delete()
+                    logger.info("Branch preview fallback '%s' berhasil dihapus.", alt)
+                    return f"Branch preview '{clean_branch}' sudah tidak ada; yang dihapus adalah '{alt}'."
+                except Exception as alt_err:
+                    alt_err_str = str(alt_err)
+                    if "404" in alt_err_str or "Not Found" in alt_err_str:
+                        return f"Branch preview '{clean_branch}' sudah tidak ada (sudah dihapus)."
             return f"Branch preview '{clean_branch}' sudah tidak ada (sudah dihapus)."
         logger.error("Gagal menghapus branch preview '%s': %s", clean_branch, err)
         return f"Gagal menghapus branch preview '{clean_branch}': {err}"
