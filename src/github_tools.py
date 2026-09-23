@@ -142,6 +142,31 @@ async def create_pull_request(
         return f"Gagal membuat Pull Request: {err_str}"
 
 
+async def merge_pull_request(pr_number) -> str:
+    """
+    Menggabungkan (merge) Pull Request ke branch dasarnya via GitHub API.
+    pr_number bisa berupa nomor PR (int/str) atau URL PR.
+    """
+    repo = _get_repo()
+    if not repo:
+        return "Credentials GITHUB_TOKEN, GITHUB_OWNER, atau GITHUB_REPO belum dikonfigurasi."
+
+    if not pr_number:
+        return "Nomor PR tidak valid."
+
+    try:
+        num = str(pr_number).strip().rstrip("/").rsplit("/", 1)[-1]
+        pr = repo.get_pull(int(num))
+        result = pr.merge()
+        if getattr(result, "merged", False):
+            return f"PR #{num} berhasil di-merge: {result.message}"
+        return f"PR #{num} gagal di-merge: {result.message}"
+    except Exception as e:
+        err_str = str(e)
+        logger.error("Failed to merge Pull Request '%s': %s", pr_number, err_str)
+        return f"Gagal merge PR: {err_str}"
+
+
 def _sanitize_slug(name: str) -> str:
     """Mengubah nama menjadi slug aman untuk nama branch (huruf kecil, dash)."""
     s = re.sub(r"[^a-z0-9]+", "-", str(name or "").lower()).strip("-")

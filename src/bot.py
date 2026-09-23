@@ -228,12 +228,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     await query.answer()
     data = query.data or ""
-    if not data.startswith("cmd:"):
-        return
-    cmd = data[4:].strip()
     chat_id = query.message.chat.id if query.message and query.message.chat else None
     if not chat_id:
         return
+
+    # Tombol alur coding agent (plan & hasil PR)
+    if data.startswith("plan:"):
+        await _handle_coding_plan_callback(query, chat_id, data[5:].strip())
+        return
+    if data.startswith("pr:"):
+        await _handle_coding_result_callback(query, chat_id, data[3:].strip())
+        return
+
+    if not data.startswith("cmd:"):
+        return
+    cmd = data[4:].strip()
 
     # Command yang butuh input: balas instruksi (tidak bisa via tombol)
     if cmd in ("cuaca", "saham", "cari", "gambar"):
@@ -809,9 +818,13 @@ POPULAR_STOCK_TICKERS = [
 ]
 
 HEAVY_KEYWORDS = {
+    "coding_agent": [
+        "edit dirimu", "tambahkan fitur", "bikin fitur", "buatkan fitur",
+        "perbaiki bug", "self update", "update dirimu", "perbaiki kode",
+        "ubah kode", "refactor", "tambah command", "perbaiki dirimu",
+    ],
     "github": [
-        "github", "baca file github", "baca file repo", "edit dirimu", "tambahkan fitur",
-        "perbaiki bug", "self update", "update dirimu", "push ke github", "pull request",
+        "github", "baca file github", "baca file repo", "push ke github", "pull request",
         "buat pr", "create pr", "baca github",
     ],
     "vercel_logs": [
@@ -909,6 +922,7 @@ HEAVY_KEYWORDS = {
 HEAVY_BACKGROUND_INTENTS = {
     "rekomendasi", "suara", "jurnal", "drive",
     "search", "gambar", "neo4j", "coding", "github", "vercel_logs", "lokasi",
+    "coding_agent",
 }
 
 
@@ -1252,6 +1266,205 @@ async def _route_heavy_task(
     return True
 
 
+def _coding_plan_keyboard() -> InlineKeyboardMarkup:
+    """Tombol inline tahap review plan coding agent."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Setuju", callback_data="plan:approve"),
+            InlineKeyboardButton("✏️ Perbaiki", callback_data="plan:fix"),
+        ],
+        [InlineKeyboardButton("❌ Batalkan", callback_data="plan:cancel")],
+    ])
+
+
+async def _start_coding_agent_flow(
+    destination,
+    chat_id: int,
+    user_message: str,
+) -> None:
+    """
+    Memulai alur coding agent: buat plan, kirim SATU bubble plan + tombol approval,
+    lalu simpan state plan di KV. Eksekusi baru berjalan setelah user menyetujui.
+    """
+    from src.handlers import generate_coding_plan, format_plan_text, send_or_edit_progress
+    from src.kv import save_plan_state
+
+    progres = await destination.send_message("🧠 Menyusun rencana perubahan...")
+    msg_id = progres.message_id if progres else None
+
+    plan = await generate_coding_plan(user_message)
+    plan_text = format_plan_text(plan)
+
+    await send_or_edit_progress(
+        chat_id, msg_id, plan_text, reply_markup=_coding_plan_keyboard()
+    )
+
+    await save_plan_state(chat_id, {
+        "plan": plan.get("plan", ""),
+        "perintah_asli": user_message,
+        "langkah": plan.get("langkah", []),
+        "file": plan.get("file", []),
+        "estimasi": plan.get("estimasi", ""),
+        "status": "menunggu",
+        "message_id": msg_id,
+    })
+
+
+async def _execute_approved_plan(chat_id: int, user_name: str = "Teman") -> bool:
+    """
+    Menjalankan plan yang sudah disetujui: edit bubble jadi progress, simpan pending
+    task (delegated) lalu delegasikan ke Render worker. Fallback ke /api/process_pending
+    bila worker tidak menerima.
+    """
+    from src.handlers import delegate_to_worker, trigger_process_pending_endpoint, update_progress
+    from src.kv import get_plan_state, save_plan_state, save_pending_task, save_task_start
+
+    state = await get_plan_state(chat_id)
+    if not state:
+        return False
+
+    perintah = state.get("perintah_asli", "")
+    msg_id = state.get("message_id")
+    plan_text = state.get("plan", "")
+
+    await save_task_start(chat_id)
+    if msg_id:
+        await update_progress(
+            chat_id, msg_id,
+            f"⏳ Memproses Plan: {plan_text}\n\n"
+            "[1/5] Menyiapkan worker...\n"
+            "[2/5] Clone repo...\n"
+            "[3/5] Edit file...\n"
+            "[4/5] Commit & push...\n"
+            "[5/5] Membuat PR...\n\n"
+            "Mohon tunggu...",
+        )
+
+    await save_pending_task(
+        chat_id=chat_id,
+        user_message=perintah,
+        intent="coding_agent",
+        user_name=user_name,
+        message_id=msg_id,
+        delegated=True,
+    )
+    state["status"] = "dieksekusi"
+    await save_plan_state(chat_id, state)
+
+    delegated = await delegate_to_worker(chat_id, perintah, "coding_agent", user_name, msg_id)
+    if not delegated:
+        logger.warning("Delegate coding_agent ke Render gagal; fallback proses lokal chat=%s", chat_id)
+        await save_pending_task(
+            chat_id=chat_id,
+            user_message=perintah,
+            intent="coding_agent",
+            user_name=user_name,
+            message_id=msg_id,
+            delegated=False,
+        )
+        await trigger_process_pending_endpoint()
+    return True
+
+
+async def _handle_coding_plan_callback(query, chat_id: int, action: str) -> None:
+    """
+    Menangani tombol tahap plan: approve / fix / cancel.
+    """
+    from src.handlers import update_progress
+    from src.kv import clear_plan_state, get_plan_state, save_clarify_state
+
+    state = await get_plan_state(chat_id)
+    if not state:
+        await query.message.reply_text("Plan sudah tidak aktif atau kedaluwarsa. Kirim perintah baru ya.")
+        return
+
+    msg_id = state.get("message_id")
+
+    if action == "approve":
+        await _execute_approved_plan(chat_id, user_name="Teman")
+        return
+
+    if action == "cancel":
+        await clear_plan_state(chat_id)
+        if msg_id:
+            await update_progress(chat_id, msg_id, "❌ Plan dibatalkan. Tidak ada perubahan yang dilakukan.")
+        else:
+            await query.message.reply_text("❌ Plan dibatalkan.")
+        return
+
+    if action == "fix":
+        # Simpan state klarifikasi agar pesan balasan user dianggap feedback revisi plan.
+        await save_clarify_state(chat_id, f"__plan_fix__:{state.get('perintah_asli', '')}")
+        if msg_id:
+            await update_progress(
+                chat_id, msg_id,
+                "✏️ Kirim feedback perbaikan plan-nya. Aku akan menyusun ulang plan sesuai masukanmu.",
+            )
+        else:
+            await query.message.reply_text("✏️ Kirim feedback perbaikan plan-nya.")
+
+
+async def _handle_coding_result_callback(query, chat_id: int, action: str) -> None:
+    """
+    Menangani tombol tahap hasil: review / merge / delete branch.
+    """
+    from src.handlers import update_progress
+    from src.kv import clear_plan_state, get_plan_state
+
+    state = await get_plan_state(chat_id)
+    if not state:
+        await query.message.reply_text("Tidak ada plan aktif. Kirim perintah baru ya.")
+        return
+
+    msg_id = state.get("message_id")
+    branch = state.get("branch", "")
+    pr_number = state.get("pr_number", "")
+
+    if action == "review":
+        owner = os.environ.get("GITHUB_OWNER", "").strip()
+        repo_name = os.environ.get("GITHUB_REPO", "").strip()
+        if pr_number:
+            url = f"https://github.com/{owner}/{repo_name}/pull/{pr_number}"
+            await query.message.reply_text(f"🔍 Review PR: {url}")
+        else:
+            await query.message.reply_text("🔍 Belum ada nomor PR yang tercatat.")
+        return
+
+    if action == "merge":
+        from src.github_tools import merge_pull_request
+        if not pr_number:
+            await query.message.reply_text("❌ Nomor PR belum tersedia. Coba lagi setelah PR dibuat.")
+            return
+        res = await merge_pull_request(pr_number)
+        if branch:
+            from src.github_tools import delete_github_branch
+            await delete_github_branch(branch)
+        await clear_plan_state(chat_id)
+        final = f"✅ Berhasil di-Merge ke Main\n\n{res}"
+        if branch:
+            final += f"\n🌿 Branch {branch} dihapus."
+        final += "\n🚀 Vercel auto-deploy sedang berjalan..."
+        if msg_id:
+            await update_progress(chat_id, msg_id, final)
+        else:
+            await query.message.reply_text(final)
+        return
+
+    if action == "delete":
+        from src.github_tools import delete_github_branch
+        if branch:
+            res = await delete_github_branch(branch)
+        else:
+            res = "Nama branch tidak tercatat."
+        await clear_plan_state(chat_id)
+        final = f"❌ Branch dihapus. Perubahan tidak di-merge.\n\n{res}"
+        if msg_id:
+            await update_progress(chat_id, msg_id, final)
+        else:
+            await query.message.reply_text(final)
+        return
+
+
 async def handle_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -1274,9 +1487,33 @@ async def handle_message(
     if clarify_state:
         answer_lower = user_message.lower()
         await clear_clarify_state(chat_id)
+        perintah_asli = clarify_state.get("perintah_asli") or ""
+        # Feedback revisi plan coding agent: susun ulang plan memakai perintah asli + masukan user.
+        if perintah_asli.startswith("__plan_fix__:"):
+            from src.handlers import generate_coding_plan, format_plan_text, send_or_edit_progress
+            from src.kv import get_plan_state, save_plan_state
+            original = perintah_asli[len("__plan_fix__:"):]
+            revised_prompt = f"Perintah awal: {original}\n\nFeedback perbaikan dari user: {user_message}"
+            plan = await generate_coding_plan(revised_prompt)
+            state = await get_plan_state(chat_id) or {}
+            msg_id = state.get("message_id")
+            await send_or_edit_progress(
+                chat_id, msg_id, format_plan_text(plan),
+                reply_markup=_coding_plan_keyboard(),
+            )
+            await save_plan_state(chat_id, {
+                "plan": plan.get("plan", ""),
+                "perintah_asli": original,
+                "langkah": plan.get("langkah", []),
+                "file": plan.get("file", []),
+                "estimasi": plan.get("estimasi", ""),
+                "status": "menunggu",
+                "message_id": msg_id,
+            })
+            return
         if any(k in answer_lower for k in CONFIRM_KEYWORDS):
             # User mengonfirmasi — proses ulang perintah asli yang ambigu lewat pipeline normal
-            user_message = clarify_state.get("perintah_asli") or user_message
+            user_message = perintah_asli or user_message
         elif any(k in answer_lower for k in SKIP_KEYWORDS):
             await update.effective_chat.send_message("Baik, abaikan saja pertanyaan tadi. Ada lagi yang bisa aku bantu?")
             return
@@ -1401,6 +1638,7 @@ async def handle_message(
             "akademik": "akademik",
             "cek_token": "cek_token",
             "renew_token": "renew_token",
+            "coding_agent": "coding_agent",
         }
         feat_name = intent_to_feature.get(intent, intent)
         from src.kv import is_feature_active
@@ -1452,6 +1690,11 @@ async def handle_message(
             return
         except Exception as quota_err:
             logger.error("Gagal eksekusi kuota imperatif: %s", str(quota_err))
+
+    # --- Coding Agent: buat plan dulu, minta approval user via tombol (Plan dulu, eksekusi belakangan) ---
+    if intent == "coding_agent":
+        await _start_coding_agent_flow(update.effective_chat, chat_id, user_message)
+        return
 
     # --- Async Landing Page Path (Anti Gantung & Notifikasi Progres Satu Pesan) ---
     if is_landing_page_generation_request(user_message, intent):

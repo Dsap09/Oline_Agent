@@ -36,6 +36,7 @@ FAILURE_COUNT_PREFIX = "failure_count"
 CLARIFY_PREFIX = "clarify"
 TOKEN_PREFIX = "token"
 PERSONA_PREFIX = "persona"
+PLAN_PREFIX = "coding_plan"
 
 
 
@@ -562,6 +563,58 @@ async def clear_clarify_state(chat_id: int) -> bool:
     Menghapus state klarifikasi dari KV setelah user menjawab / batal.
     """
     key = f"{CLARIFY_PREFIX}:{chat_id}"
+    result = await _kv_request(["DEL", key])
+    return result is not None
+
+
+# --- Coding Agent Plan State (Alur Plan -> Approval -> Eksekusi) ---
+# Menyimpan plan yang sedang menunggu persetujuan / status eksekusi di KV.
+# TTL 1 jam agar state tidak menggantung bila user tidak merespons.
+
+async def save_plan_state(chat_id: int, plan: dict) -> bool:
+    """
+    Menyimpan state plan coding agent ke KV untuk user tertentu.
+    """
+    key = f"{PLAN_PREFIX}:{chat_id}"
+    payload = json.dumps({
+        "plan": plan.get("plan", ""),
+        "perintah_asli": plan.get("perintah_asli", ""),
+        "langkah": plan.get("langkah", []),
+        "file": plan.get("file", []),
+        "estimasi": plan.get("estimasi", ""),
+        "status": plan.get("status", "menunggu"),
+        "branch": plan.get("branch", ""),
+        "pr_number": plan.get("pr_number", ""),
+        "message_id": plan.get("message_id"),
+        "waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }, ensure_ascii=False)
+    result = await _kv_request(["SET", key, payload, "EX", "3600"])
+    return result is not None
+
+
+async def get_plan_state(chat_id: int) -> Optional[dict]:
+    """
+    Mengambil state plan coding agent dari KV. Returns dict jika ada, None jika tidak.
+    """
+    key = f"{PLAN_PREFIX}:{chat_id}"
+    result = await _kv_request(["GET", key])
+    if result and result.get("result"):
+        try:
+            data = result["result"]
+            if isinstance(data, str):
+                data = json.loads(data)
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning("Error parsing plan state from KV: %s", str(e))
+    return None
+
+
+async def clear_plan_state(chat_id: int) -> bool:
+    """
+    Menghapus state plan coding agent dari KV.
+    """
+    key = f"{PLAN_PREFIX}:{chat_id}"
     result = await _kv_request(["DEL", key])
     return result is not None
 

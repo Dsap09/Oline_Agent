@@ -42,3 +42,5 @@ node_modules/
 # Brief & PRD docs
 brief.md
 prd.md
+
+.vercel

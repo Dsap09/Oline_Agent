@@ -3,6 +3,7 @@ Handler modul untuk pemrosesan pending task dan pembaruan progres satu pesan din
 """
 
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime
@@ -132,9 +133,15 @@ async def trigger_process_pending_endpoint() -> bool:
         return False
 
 
-async def update_progress(chat_id: int, message_id: int, text: str) -> bool:
+async def update_progress(
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup=None,
+) -> bool:
     """
     Memperbarui isi dari SATU pesan progres Telegram menggunakan edit_message_text.
+    reply_markup (InlineKeyboardMarkup) opsional: tombol inline yang ikut di-update.
     """
     if not TELEGRAM_BOT_TOKEN or not message_id:
         return False
@@ -144,10 +151,14 @@ async def update_progress(chat_id: int, message_id: int, text: str) -> bool:
         from src.utils import append_elapsed_time
         edit_text = await append_elapsed_time(chat_id, text)
         edit_text = edit_text[:4096] if len(edit_text) > 4096 else edit_text
+        kwargs = {}
+        if reply_markup is not None:
+            kwargs["reply_markup"] = reply_markup
         await bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
             text=edit_text,
+            **kwargs,
         )
         return True
     except Exception as e:
@@ -156,6 +167,145 @@ async def update_progress(chat_id: int, message_id: int, text: str) -> bool:
             message_id, chat_id, str(e)
         )
         return False
+
+
+async def send_or_edit_progress(
+    chat_id: int,
+    message_id: Optional[int],
+    text: str,
+    reply_markup=None,
+) -> Optional[int]:
+    """
+    Helper bubble dinamis: edit pesan yang sudah ada (message_id) atau kirim pesan baru
+    bila belum ada. Mengembalikan message_id bubble yang dipakai (untuk disimpan di KV).
+    """
+    if message_id:
+        await update_progress(chat_id, message_id, text, reply_markup=reply_markup)
+        return message_id
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    kwargs = {}
+    if reply_markup is not None:
+        kwargs["reply_markup"] = reply_markup
+    sent = await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+    return sent.message_id if sent else None
+
+
+def coding_result_keyboard():
+    """Tombol inline tahap hasil (Review / Merge / Hapus) — dipakai Vercel & worker."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔍 Review", callback_data="pr:review"),
+            InlineKeyboardButton("✅ Merge ke Main", callback_data="pr:merge"),
+        ],
+        [InlineKeyboardButton("❌ Hapus Branch", callback_data="pr:delete")],
+    ])
+
+
+PLAN_SYSTEM_PROMPT = (
+    "Kamu adalah perencana teknis repository Python (bot Telegram Oline, Vercel Serverless). "
+    "Diberi perintah perubahan kode, kamu menyusun rencana langkah demi langkah yang jelas. "
+    "Balas HANYA JSON valid dengan skema: "
+    '{"plan": "<judul singkat>", "langkah": ["<langkah 1>", ...], '
+    '"file": ["<path file yang akan diubah/dibuat>", ...], '
+    '"estimasi": "<perkiraan jumlah file/jumlah baris>"}. '
+    "Jangan sertakan markdown, penjelasan tambahan, atau teks di luar JSON."
+)
+
+
+async def generate_coding_plan(perintah: str) -> dict:
+    """
+    Membuat rencana teknis (plan) untuk perintah coding user menggunakan DeepInfra
+    (DeepSeek V4 Flash). Mengembalikan dict {plan, langkah, file, estimasi}.
+    Fallback ke Gemini bila DeepInfra gagal.
+    """
+    try:
+        from src.deepinfra import chat_deepinfra
+        raw = await chat_deepinfra(
+            system_prompt=PLAN_SYSTEM_PROMPT,
+            history=[],
+            user_message=perintah,
+            tool_declarations=[],
+            chat_id=0,
+        )
+        parsed = _parse_plan_json(raw)
+        if parsed:
+            return parsed
+    except Exception as e:
+        logger.warning("generate_coding_plan (DeepInfra) gagal: %s", str(e))
+
+    # Fallback ke Gemini
+    try:
+        from src.gemini import chat_with_oline
+        raw = await chat_with_oline(
+            chat_id=0,
+            user_message=perintah,
+            user_name="System",
+            use_gemini_only=True,
+        )
+        parsed = _parse_plan_json(raw)
+        if parsed:
+            return parsed
+    except Exception as e:
+        logger.warning("generate_coding_plan (Gemini) gagal: %s", str(e))
+
+    # Plan sederhana default agar alur tetap berjalan walau model gagal
+    return {
+        "plan": f"Modifikasi: {perintah[:60]}",
+        "langkah": [f"Terapkan perubahan untuk: {perintah}"],
+        "file": [],
+        "estimasi": "1 file diubah (perkiraan kasar)",
+    }
+
+
+def _parse_plan_json(raw: str) -> Optional[dict]:
+    """Mengekstrak dict plan dari respons model (strip markdown fences bila ada)."""
+    if not raw:
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            text = text[start:end + 1]
+        data = json.loads(text)
+        if isinstance(data, dict) and data.get("langkah"):
+            return {
+                "plan": str(data.get("plan", "Rencana modifikasi kode")),
+                "langkah": [str(l) for l in data.get("langkah", [])],
+                "file": [str(f) for f in data.get("file", [])],
+                "estimasi": str(data.get("estimasi", "")),
+            }
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.warning("Gagal parse plan JSON: %s", str(e))
+    return None
+
+
+def format_plan_text(plan: dict) -> str:
+    """Memformat dict plan menjadi teks bubble yang rapi untuk Telegram."""
+    lines = [f"📋 Plan: {plan.get('plan', 'Rencana')}", ""]
+    langkah = plan.get("langkah", [])
+    if langkah:
+        lines.append("Langkah:")
+        for i, l in enumerate(langkah, 1):
+            lines.append(f"{i}. {l}")
+    file = plan.get("file", [])
+    if file:
+        lines.append("")
+        lines.append("File:")
+        for f in file:
+            lines.append(f"• {f}")
+    estimasi = plan.get("estimasi", "")
+    if estimasi:
+        lines.append("")
+        lines.append(f"Estimasi: {estimasi}")
+    return "\n".join(lines)
 
 
 def build_context_prompt(checkpoint: dict) -> str:

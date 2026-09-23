@@ -1,10 +1,14 @@
 """
-Script untuk mendaftarkan daftar perintah (autocomplete) Oline ke Telegram
-via Bot API setMyCommands. Dengan ini, user bisa mengetik "/" dan melihat
-daftar command + deskripsi (autocomplete) tanpa perlu set manual via @BotFather.
+Script untuk mengelola daftar perintah (autocomplete) Oline di Telegram
+via Bot API setMyCommands / deleteMyCommands.
+
+CATATAN: Untuk menghilangkan tombol "Menu" (daftar perintah) dari UI Telegram,
+jalankan script ini dengan flag `--clear` SEKALI, lalu JANGAN jalankan script
+tanpa flag di deploy berikutnya (tombol muncul selama daftar perintah ada).
 
 Penggunaan:
-    python scripts/set_commands.py          # daftarkan command ke bot
+    python scripts/set_commands.py          # daftarkan command ke bot (default)
+    python scripts/set_commands.py --clear  # KOSONGKAN daftar command (hapus tombol Menu)
     python scripts/set_commands.py --info   # lihat command yang sudah terdaftar
 
 Environment variables yang dibutuhkan:
@@ -93,8 +97,29 @@ def get_commands_info() -> None:
         print(f"Gagal mengambil daftar command: {result.get('description', 'Unknown error')}")
 
 
+def clear_commands() -> None:
+    """
+    Kosongkan daftar perintah di Telegram via deleteMyCommands.
+    Menghilangkan tombol "Menu" dari UI, tanpa menghapus handler command di kode —
+    command tetap bisa diketik manual (/help, /cuaca, dll).
+    """
+    token = _get_token()
+    api_url = f"https://api.telegram.org/bot{token}/deleteMyCommands"
+    response = httpx.post(api_url, json={}, timeout=30.0)
+    result = response.json()
+
+    if result.get("ok"):
+        print("Berhasil menghapus daftar command. Tombol 'Menu' akan hilang dari UI Telegram. [SUCCESS]")
+    else:
+        print(f"Gagal menghapus daftar command [FAIL]")
+        print(f"Error: {result.get('description', 'Unknown error')}")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--info":
         get_commands_info()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--clear":
+        clear_commands()
     else:
         set_commands()

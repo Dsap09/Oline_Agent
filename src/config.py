@@ -62,6 +62,7 @@ FITUR_LIST = [
     "akademik",
     "cek_token",
     "renew_token",
+    "coding_agent",
 ]
 
 # Registry token API Oline untuk tool check_token_status (Token Health Check).

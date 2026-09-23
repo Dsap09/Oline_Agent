@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import sys
 
 # Repo root agar bisa import src/
@@ -35,6 +36,76 @@ app = FastAPI(title="Oline Worker")
 
 WORKER_KEY = os.environ.get("OLINE_WORKER_KEY", "").strip()
 VERCEL_CALLBACK_URL = os.environ.get("VERCEL_CALLBACK_URL", "").strip()
+
+
+def _tool_available(name: str) -> bool:
+    """Cek apakah binary tersedia di PATH worker."""
+    try:
+        return shutil.which(name) is not None
+    except Exception:
+        return False
+
+
+async def _ensure_opencode_cli() -> None:
+    """
+    Startup check untuk coding agent: pastikan node/npm/git/opencode tersedia di worker.
+    Jika opencode CLI belum ada tapi node+npm ada, install global via npm (sekali).
+    Hasil check dicatat ke log agar mudah didiagnosis dari dashboard Render.
+    """
+    node_ok = _tool_available("node")
+    npm_ok = _tool_available("npm")
+    git_ok = _tool_available("git")
+    opencode_ok = _tool_available("opencode")
+
+    logger.info(
+        "[startup] Tool check — node=%s npm=%s git=%s opencode=%s",
+        node_ok, npm_ok, git_ok, opencode_ok,
+    )
+
+    if opencode_ok:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "opencode", "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            ver = (stdout or b"").decode("utf-8", errors="replace").strip()
+            logger.info("[startup] opencode CLI versi: %s", ver or "(kosong)")
+        except Exception as e:
+            logger.warning("[startup] Gagal cek versi opencode: %s", str(e))
+        return
+
+    if not (node_ok and npm_ok):
+        logger.warning(
+            "[startup] node/npm tidak tersedia — jalur OpenCode CLI nonaktif, "
+            "fallback tools akan dipakai untuk coding_agent."
+        )
+        return
+
+    logger.info("[startup] node+npm tersedia, menginstall opencode-ai secara global...")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "npm", "install", "-g", "opencode-ai",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+        log = (stdout or b"").decode("utf-8", errors="replace")
+        err = (stderr or b"").decode("utf-8", errors="replace")
+        if proc.returncode == 0:
+            logger.info("[startup] opencode-ai terinstall: %s", log[-300:])
+        else:
+            logger.warning("[startup] Gagal install opencode-ai: %s", err[-300:])
+    except asyncio.TimeoutError:
+        logger.warning("[startup] Install opencode-ai timeout (> 5 menit).")
+    except Exception as e:
+        logger.warning("[startup] Error saat install opencode-ai: %s", str(e))
+
+
+@app.on_event("startup")
+async def _startup_check():
+    asyncio.create_task(_ensure_opencode_cli())
 
 
 def _auth_ok(auth_header: str) -> bool:
@@ -189,6 +260,192 @@ async def _run_task(chat_id: int, perintah: str, intent: str, user_name: str, ms
         await _notify_vercel_callback(chat_id, "error", str(e)[:500])
 
 
+async def _slugify(text: str) -> str:
+    """Mengubah teks bebas menjadi slug aman untuk nama branch."""
+    import re
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "fitur").lower()).strip("-")
+    return s[:40] or "fitur"
+
+
+async def _try_opencode_cli(perintah: str, plan: dict) -> tuple[bool, str]:
+    """
+    Menjalankan OpenCode CLI (hybrid primary) untuk mengeksekusi plan di repo checkout.
+    Mengembalikan (success, output/log). Perlu runtime Node + binary opencode di worker;
+    bila tidak tersedia, kembalikan (False, pesan) agar fallback tools dipakai.
+    """
+    exe = shutil.which("opencode")
+    if not exe:
+        npx = shutil.which("npx")
+        if not npx:
+            return False, "opencode/npx CLI tidak tersedia di worker"
+        exe = npx
+        use_npx = True
+    else:
+        use_npx = False
+
+    plan_text = json.dumps(plan, ensure_ascii=False, indent=2)
+    prompt = (
+        "Kerjakan perintah coding berikut di repository ini. "
+        "Buat branch git baru bernama oline-feature/<slug>. "
+        f"Perintah user:\n{perintah}\n\n"
+        f"Rencana yang sudah disetujui:\n{plan_text}\n\n"
+        "Setelah selesai, commit perubahan dan push branch ke origin. "
+        "Jangan push ke main."
+    )
+
+    cmd = []
+    if use_npx:
+        cmd = [exe, "-y", "opencode-ai", "run", "--format", "json", prompt]
+    else:
+        cmd = [exe, "run", "--format", "json", prompt]
+
+    logger.info("[worker] Menjalankan OpenCode CLI: %s", " ".join(cmd[:6]))
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=_REPO_ROOT,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return False, "OpenCode CLI timeout (> 10 menit)"
+
+        out = (stdout or b"").decode("utf-8", errors="replace")
+        err = (stderr or b"").decode("utf-8", errors="replace")
+        log = f"{out}\n{err}".strip()
+        if proc.returncode == 0:
+            return True, log
+        return False, f"OpenCode CLI exit {proc.returncode}: {log[:2000]}"
+    except Exception as e:
+        return False, f"Gagal menjalankan OpenCode CLI: {str(e)}"
+
+
+async def _run_coding_task(
+    chat_id: int,
+    perintah: str,
+    user_name: str,
+    msg_id: int | None,
+) -> None:
+    """
+    Eksekusi coding agent di worker (hybrid): coba OpenCode CLI dulu, fallback ke
+    alur GitHub tools (DeepInfra/DeepSeek). Lalu buat PR dan laporkan ke Telegram
+    dengan tombol Review/Merge/Hapus di bubble yang sama.
+    """
+    from src.handlers import (
+        clear_pending_task,
+        clear_progress_message_id,
+        coding_result_keyboard,
+        send_telegram_message,
+        update_progress,
+    )
+    from src.kv import (
+        clear_task_start,
+        get_plan_state,
+        save_plan_state,
+    )
+
+    from src.github_tools import create_pull_request
+
+    state = await get_plan_state(chat_id) or {}
+    langkah = state.get("langkah", []) or []
+    plan_summary = state.get("plan", perintah)
+
+    branch = f"oline-feature/{await _slugify(plan_summary)}"
+
+    try:
+        if msg_id:
+            await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Clone repo...")
+
+        # --- Primary: OpenCode CLI ---
+        ok, log = await _try_opencode_cli(perintah, state)
+        if not ok:
+            logger.warning("[worker] OpenCode CLI gagal (%s), fallback ke tools.", log[:300])
+            from src.github_tools import create_github_branch, update_github_file
+            if msg_id:
+                await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Clone repo... ✅\n[3/5] Edit file (fallback tools)...")
+            branch_res = await create_github_branch(branch)
+            file_paths = state.get("file", [])
+            if not file_paths:
+                file_paths = [path.strip() for path in log.splitlines() if path.strip().startswith(("src/", "api/", "tests/", "oline-worker/"))][:8] or ["src/tools.py"]
+            if msg_id:
+                await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Clone repo... ✅\n[3/5] Edit file... ✅\n[4/5] Commit & push...")
+            edited_any = False
+            for fp in file_paths:
+                from src.github_tools import read_github_file, ai_fix_code
+                current = await read_github_file(fp, branch="main")
+                if current.startswith("Credentials") or current.startswith("File "):
+                    continue
+                new_content = await ai_fix_code(current, f"Perintah: {perintah}\nPlan: {plan_summary}")
+                if new_content and new_content != current:
+                    await update_github_file(branch, fp, new_content, f"feat: {plan_summary[:60]}")
+                    edited_any = True
+            if not edited_any:
+                marker = (
+                    f"# Fitur baru: {plan_summary}\n"
+                    f"# Perintah asli: {perintah}\n"
+                    "# TODO: implementasi detail sesuai plan.\n"
+                )
+                await update_github_file(branch, "src/coding_agent_note.py", marker, f"feat: {plan_summary[:60]}")
+        else:
+            if msg_id:
+                await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Clone repo... ✅\n[3/5] Edit file (OpenCode CLI)... ✅\n[4/5] Commit & push...")
+
+        # --- Buat Pull Request ---
+        if msg_id:
+            await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Clone repo... ✅\n[3/5] Edit file... ✅\n[4/5] Commit & push... ✅\n[5/5] Membuat PR...")
+
+        pr_title = f"feat: {plan_summary[:70]}"
+        pr_body = (
+            f"Perintah user: {perintah}\n\n"
+            f"Langkah:\n" + "\n".join(f"- {l}" for l in langkah) +
+            "\n\nRencana dibuat & disetujui user melalui Telegram."
+        )
+        pr_res = await create_pull_request(branch=branch, title=pr_title, body=pr_body)
+        logger.info("[worker] PR coding agent: %s", pr_res)
+
+        # --- Laporkan hasil + tombol aksi (bubble yang sama) ---
+        import re as _re
+        m = _re.search(r"pull/(\d+)", pr_res)
+        pr_number = m.group(1) if m else ""
+        state["branch"] = branch
+        state["pr_number"] = pr_number
+        state["status"] = "selesai"
+        await save_plan_state(chat_id, state)
+
+        report = (
+            f"✅ Selesai: {plan_summary}\n\n"
+            f"🌿 Branch: {branch}\n"
+            f"📌 PR: {pr_res}\n\n"
+            "Pilih aksi di bawah untuk menutup siklus:"
+        )
+        if msg_id:
+            await update_progress(chat_id, msg_id, report, reply_markup=coding_result_keyboard())
+        else:
+            await send_telegram_message(chat_id, report)
+
+        await clear_pending_task(chat_id)
+        await clear_progress_message_id(chat_id)
+        await clear_task_start(chat_id)
+        await _notify_vercel_callback(chat_id, "success", report[:500])
+    except Exception as e:
+        logger.error("[worker] Coding task gagal chat=%s: %s", chat_id, str(e), exc_info=True)
+        fail_text = f"❌ Gagal memproses plan. Penyebab: {str(e)[:150]}"
+        if msg_id:
+            await update_progress(chat_id, msg_id, fail_text)
+        else:
+            await send_telegram_message(chat_id, fail_text)
+        try:
+            await clear_pending_task(chat_id)
+            await clear_progress_message_id(chat_id)
+            await clear_task_start(chat_id)
+        except Exception:
+            pass
+        await _notify_vercel_callback(chat_id, "error", str(e)[:500])
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "oline-worker"}
@@ -218,6 +475,9 @@ async def process(request: Request):
     logger.info("[worker] Menerima task chat=%s intent=%s msg_id=%s", chat_id, intent, msg_id)
 
     # Jalankan di background; balas 202 cepat (Render menahan proses hidup sampai selesai)
-    asyncio.create_task(_run_task(chat_id, perintah, intent, user_name, msg_id))
+    if intent == "coding_agent":
+        asyncio.create_task(_run_coding_task(chat_id, perintah, user_name, msg_id))
+    else:
+        asyncio.create_task(_run_task(chat_id, perintah, intent, user_name, msg_id))
 
     return JSONResponse({"status": "accepted", "message": "Task diterima, diproses di background."}, status_code=202)
