@@ -33,7 +33,7 @@ All code, comments, docstrings, and user-facing strings are in **Indonesian**. M
 - `.gitignore` excludes `.env`, `*.json` (except `vercel.json`), `brief.md`, `prd.md`, `scratch/` — never commit these.
 - Worker env: `RENDER_WORKER_URL`, `OLINE_WORKER_KEY` (shared key for `/api/delegate`/`/api/callback`/worker `/process`). Endpoint secrets: `DELEGATE_SECRET`, `PROCESS_PENDING_SECRET`, `KEEPALIVE_SECRET`, `WEBHOOK_SECRET`.
 - Deploy: `vercel --prod`, then register webhook: `python scripts/set_webhook.py https://<project>.vercel.app` (inspect with `--info`).
-- **Do NOT run `scripts/set_commands.py` without flags** — it registers the Telegram command list, which makes Telegram show the blue "Menu" button beside the input. To keep commands typed manually while hiding that button: `python scripts/set_commands.py --clear` (once) and never re-register. `--info` shows the current list.
+- **Keep the Telegram Menu button**: run `python scripts/set_commands.py` (no flags) to register the command list so the blue "Menu" button + `/` suggestions show. `--info` shows the current list; `--clear` empties it (hides the button) — only use `--clear` if that behavior is wanted.
 - The GitHub self-improvement tools open PRs to `main` for manual review; auto-deploy happens on merge. Don't push directly to `main` unless asked.
 
 ## Layout (non-obvious)
