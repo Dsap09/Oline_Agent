@@ -37,6 +37,32 @@ app = FastAPI(title="Oline Worker")
 WORKER_KEY = os.environ.get("OLINE_WORKER_KEY", "").strip()
 VERCEL_CALLBACK_URL = os.environ.get("VERCEL_CALLBACK_URL", "").strip()
 
+# --- Pembatas memori / task paralel ---
+# Render free tier 512 MB. Task berat (landing page, coding agent) jangan
+# dijalankan bersamaan tak terbatas — pakai semaphore agar hanya sedikit yang
+# berjalan paralel, sisanya antri. Mencegah OOM / restart otomatis.
+CODING_SEMAPHORE = asyncio.Semaphore(1)   # coding agent: hanya 1 sekaligus (CLI berat)
+TASK_SEMAPHORE = asyncio.Semaphore(2)     # task umum: maks 2 paralel
+
+# Batas output CLI yang disimpan (byte) — hindari menahan output raksasa di RAM.
+CLI_OUTPUT_CAP = 64 * 1024
+
+
+async def _run_coding_task_guarded(chat_id, perintah, user_name, msg_id):
+    """Wrapper coding agent dengan semaphore (1 paralel) + log antrian."""
+    if CODING_SEMAPHORE.locked():
+        logger.info("[worker] Task coding lain sedang jalan; task chat=%s menunggu antrian.", chat_id)
+    async with CODING_SEMAPHORE:
+        await _run_coding_task(chat_id, perintah, user_name, msg_id)
+
+
+async def _run_task_guarded(chat_id, perintah, intent, user_name, msg_id):
+    """Wrapper task umum dengan semaphore (2 paralel) + log antrian."""
+    if TASK_SEMAPHORE.locked():
+        logger.info("[worker] Task umum penuh; task chat=%s menunggu antrian.", chat_id)
+    async with TASK_SEMAPHORE:
+        await _run_task(chat_id, perintah, intent, user_name, msg_id)
+
 
 def _tool_available(name: str) -> bool:
     """Cek apakah binary tersedia di PATH worker."""
@@ -112,8 +138,8 @@ async def _install_opencode_cli() -> str | None:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=420)
-        out = (stdout or b"").decode("utf-8", errors="replace")
-        err = (stderr or b"").decode("utf-8", errors="replace")
+        out = (stdout or b"")[:CLI_OUTPUT_CAP].decode("utf-8", errors="replace")
+        err = (stderr or b"")[:CLI_OUTPUT_CAP].decode("utf-8", errors="replace")
         if proc.returncode == 0:
             bin_path = _resolve_opencode_binary()
             logger.info("[startup] opencode-ai terinstall: %s -> %s", out[-300:], bin_path)
@@ -386,14 +412,14 @@ async def _try_opencode_cli(perintah: str, plan: dict) -> tuple[bool, str]:
             env=os.environ.copy(),
         )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=900)
+            stdout, stderr = await asyncio.wait_for(
+                _read_output_capped(proc), timeout=900
+            )
         except asyncio.TimeoutError:
             proc.kill()
             return False, "OpenCode CLI timeout (> 15 menit)"
 
-        out = (stdout or b"").decode("utf-8", errors="replace")
-        err = (stderr or b"").decode("utf-8", errors="replace")
-        log = f"{out}\n{err}".strip()
+        log = f"{stdout}\n{stderr}".strip()
         if proc.returncode != 0:
             return False, f"OpenCode CLI exit {proc.returncode}: {log[:2000]}"
 
@@ -406,6 +432,43 @@ async def _try_opencode_cli(perintah: str, plan: dict) -> tuple[bool, str]:
         return True, log
     except Exception as e:
         return False, f"Gagal menjalankan OpenCode CLI: {str(e)}"
+
+
+async def _read_output_capped(proc) -> tuple[str, str]:
+    """
+    Baca stdout & stderr subprocess dengan CAP ukuran, agar output raksasa
+    (mis. JSON OpenCode) tidak ditahan penuh di RAM — cegah OOM.
+    """
+    async def _drain(stream) -> str:
+        chunks = []
+        size = 0
+        while True:
+            try:
+                chunk = await asyncio.wait_for(stream.read(4096), timeout=60)
+            except asyncio.TimeoutError:
+                break
+            except Exception:
+                break
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > CLI_OUTPUT_CAP:
+                chunks.append(b"\n...[output terpotong]...")
+                break
+            chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8", errors="replace")
+
+    try:
+        stdout_text = await _drain(proc.stdout)
+        stderr_text = await _drain(proc.stderr)
+    except Exception:
+        stdout_text = ""
+        stderr_text = ""
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=30)
+    except Exception:
+        pass
+    return stdout_text, stderr_text
 
 
 async def _git_has_changes() -> bool:
@@ -741,10 +804,11 @@ async def process(request: Request):
 
     logger.info("[worker] Menerima task chat=%s intent=%s msg_id=%s", chat_id, intent, msg_id)
 
-    # Jalankan di background; balas 202 cepat (Render menahan proses hidup sampai selesai)
+    # Jalankan di background; balas 202 cepat (Render menahan proses hidup sampai selesai).
+    # Pakai semaphore agar task berat tidak jalan tak terbatas (cegah OOM/restart).
     if intent == "coding_agent":
-        asyncio.create_task(_run_coding_task(chat_id, perintah, user_name, msg_id))
+        asyncio.create_task(_run_coding_task_guarded(chat_id, perintah, user_name, msg_id))
     else:
-        asyncio.create_task(_run_task(chat_id, perintah, intent, user_name, msg_id))
+        asyncio.create_task(_run_task_guarded(chat_id, perintah, intent, user_name, msg_id))
 
     return JSONResponse({"status": "accepted", "message": "Task diterima, diproses di background."}, status_code=202)
