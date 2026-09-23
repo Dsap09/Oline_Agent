@@ -46,21 +46,104 @@ def _tool_available(name: str) -> bool:
         return False
 
 
+# Versi OpenCode CLI yang terbukti jalan dengan config DeepInfra (sama dengan lokal).
+OPENCODE_CLI_VERSION = os.environ.get("OPENCODE_CLI_VERSION", "1.18.32").strip()
+# Prefix install lokal (global npm install gagal di Render karena permission).
+OPENCODE_PREFIX = os.path.expanduser("~/.opencode")
+OPENCODE_BIN = os.path.join(OPENCODE_PREFIX, "node_modules", ".bin", "opencode")
+# Lokasi auth.json OpenCode (CLI membaca credential dari sini).
+OPENCODE_AUTH_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "opencode")
+OPENCODE_AUTH_FILE = os.path.join(OPENCODE_AUTH_DIR, "auth.json")
+
+
+def _write_opencode_auth() -> None:
+    """
+    Menulis credential DeepInfra ke auth.json OpenCode secara non-interaktif.
+    Penting: `opencode.json` pakai interpolasi {env:...} untuk apiKey yang TIDAK
+    diinterpolasi oleh CLI untuk options.apiKey — jadi auth.json adalah cara yang
+    andal (sama seperti `opencode auth login` interaktif di lokal).
+    """
+    key = os.environ.get("DEEPINFRA_API_KEY", "").strip()
+    if not key:
+        logger.warning("[startup] DEEPINFRA_API_KEY tidak diset — OpenCode CLI tidak bisa autentikasi.")
+        return
+    try:
+        os.makedirs(OPENCODE_AUTH_DIR, exist_ok=True)
+        data = {}
+        if os.path.isfile(OPENCODE_AUTH_FILE):
+            try:
+                with open(OPENCODE_AUTH_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+            except Exception:
+                data = {}
+        data["deepinfra"] = {"type": "api", "key": key}
+        with open(OPENCODE_AUTH_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.info("[startup] auth.json OpenCode ditulis (deepinfra key terpasang).")
+    except Exception as e:
+        logger.warning("[startup] Gagal menulis auth.json OpenCode: %s", str(e))
+
+
+def _resolve_opencode_binary() -> str | None:
+    """Resolve binary opencode: PATH dulu, lalu prefix lokal (hasil install kita)."""
+    exe = shutil.which("opencode")
+    if exe:
+        return exe
+    if os.path.isfile(OPENCODE_BIN) and os.access(OPENCODE_BIN, os.X_OK):
+        return OPENCODE_BIN
+    return None
+
+
+async def _install_opencode_cli() -> str | None:
+    """
+    Install OpenCode CLI ke prefix lokal (writable) via npm, pin versi.
+    Mengembalikan path binary bila berhasil, None bila gagal.
+    """
+    logger.info(
+        "[startup] Menginstall opencode-ai@%s ke %s (prefix lokal)...",
+        OPENCODE_CLI_VERSION, OPENCODE_PREFIX,
+    )
+    try:
+        os.makedirs(OPENCODE_PREFIX, exist_ok=True)
+        proc = await asyncio.create_subprocess_exec(
+            "npm", "install", "--prefix", OPENCODE_PREFIX,
+            f"opencode-ai@{OPENCODE_CLI_VERSION}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=420)
+        out = (stdout or b"").decode("utf-8", errors="replace")
+        err = (stderr or b"").decode("utf-8", errors="replace")
+        if proc.returncode == 0:
+            bin_path = _resolve_opencode_binary()
+            logger.info("[startup] opencode-ai terinstall: %s -> %s", out[-300:], bin_path)
+            return bin_path
+        logger.warning("[startup] Gagal install opencode-ai: %s", err[-400:])
+    except asyncio.TimeoutError:
+        logger.warning("[startup] Install opencode-ai timeout (> 7 menit).")
+    except Exception as e:
+        logger.warning("[startup] Error saat install opencode-ai: %s", str(e))
+    return None
+
+
 async def _ensure_opencode_cli() -> None:
     """
     Startup check untuk coding agent: pastikan node/npm/git/opencode tersedia di worker.
-    Jika opencode CLI belum ada tapi node+npm ada, install global via npm (sekali).
+    Jika opencode CLI belum ada tapi node+npm ada, install ke prefix lokal (writable).
     Hasil check dicatat ke log agar mudah didiagnosis dari dashboard Render.
     """
     node_ok = _tool_available("node")
     npm_ok = _tool_available("npm")
     git_ok = _tool_available("git")
-    opencode_ok = _tool_available("opencode")
+    opencode_ok = _resolve_opencode_binary() is not None
 
     logger.info(
         "[startup] Tool check — node=%s npm=%s git=%s opencode=%s",
         node_ok, npm_ok, git_ok, opencode_ok,
     )
+
+    # Pastikan credential DeepInfra tersedia untuk CLI (via auth.json) — wajib tiap startup.
+    _write_opencode_auth()
 
     if opencode_ok:
         try:
@@ -83,24 +166,8 @@ async def _ensure_opencode_cli() -> None:
         )
         return
 
-    logger.info("[startup] node+npm tersedia, menginstall opencode-ai secara global...")
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "npm", "install", "-g", "opencode-ai",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
-        log = (stdout or b"").decode("utf-8", errors="replace")
-        err = (stderr or b"").decode("utf-8", errors="replace")
-        if proc.returncode == 0:
-            logger.info("[startup] opencode-ai terinstall: %s", log[-300:])
-        else:
-            logger.warning("[startup] Gagal install opencode-ai: %s", err[-300:])
-    except asyncio.TimeoutError:
-        logger.warning("[startup] Install opencode-ai timeout (> 5 menit).")
-    except Exception as e:
-        logger.warning("[startup] Error saat install opencode-ai: %s", str(e))
+    # Pastikan credential DeepInfra tersedia untuk CLI (via auth.json).
+    await _install_opencode_cli()
 
 
 @app.on_event("startup")
@@ -288,15 +355,14 @@ async def _try_opencode_cli(perintah: str, plan: dict) -> tuple[bool, str]:
     Mengembalikan (success, output/log). Perlu runtime Node + binary opencode di worker;
     bila tidak tersedia, kembalikan (False, pesan) agar fallback tools dipakai.
     """
-    exe = shutil.which("opencode")
+    exe = _resolve_opencode_binary()
     if not exe:
-        npx = shutil.which("npx")
-        if not npx:
-            return False, "opencode/npx CLI tidak tersedia di worker"
-        exe = npx
-        use_npx = True
-    else:
-        use_npx = False
+        # Fallback: install on-demand ke prefix lokal (bukan global/npx).
+        installed = await _install_opencode_cli()
+        if not installed:
+            return False, "OpenCode CLI belum tersedia (install ke prefix lokal gagal)."
+        exe = installed
+        logger.info("[worker] OpenCode CLI dipakai dari: %s", exe)
 
     plan_text = json.dumps(plan, ensure_ascii=False, indent=2)
     prompt = (
@@ -308,11 +374,7 @@ async def _try_opencode_cli(perintah: str, plan: dict) -> tuple[bool, str]:
         "Selesai cukup dengan melaporkan file apa saja yang kamu ubah."
     )
 
-    cmd = []
-    if use_npx:
-        cmd = [exe, "-y", "opencode-ai", "run", "--auto", "--format", "json", prompt]
-    else:
-        cmd = [exe, "run", "--auto", "--format", "json", prompt]
+    cmd = [exe, "run", "--auto", "--format", "json", prompt]
 
     logger.info("[worker] Menjalankan OpenCode CLI: %s", " ".join(cmd[:6]))
     try:
@@ -321,6 +383,7 @@ async def _try_opencode_cli(perintah: str, plan: dict) -> tuple[bool, str]:
             cwd=_REPO_ROOT,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=os.environ.copy(),
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=900)
@@ -331,11 +394,34 @@ async def _try_opencode_cli(perintah: str, plan: dict) -> tuple[bool, str]:
         out = (stdout or b"").decode("utf-8", errors="replace")
         err = (stderr or b"").decode("utf-8", errors="replace")
         log = f"{out}\n{err}".strip()
-        if proc.returncode == 0:
-            return True, log
-        return False, f"OpenCode CLI exit {proc.returncode}: {log[:2000]}"
+        if proc.returncode != 0:
+            return False, f"OpenCode CLI exit {proc.returncode}: {log[:2000]}"
+
+        # Pastikan CLI benar-benar mengubah file; kalau tidak ada perubahan,
+        # anggap gagal agar fallback tools / pesan error yang jelas dipakai.
+        changed = await _git_has_changes()
+        if not changed:
+            logger.warning("[worker] OpenCode CLI exit 0 tapi tidak ada perubahan file.")
+            return False, f"OpenCode CLI selesai tanpa perubahan file. Log:\n{log[:1500]}"
+        return True, log
     except Exception as e:
         return False, f"Gagal menjalankan OpenCode CLI: {str(e)}"
+
+
+async def _git_has_changes() -> bool:
+    """Cek apakah ada perubahan di working tree (file staged/untracked/modified)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "status", "--porcelain",
+            cwd=_REPO_ROOT,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        out = (stdout or b"").decode("utf-8", errors="replace").strip()
+        return bool(out)
+    except Exception:
+        return True
 
 
 async def _git_prepare_branch(branch: str) -> tuple[bool, str]:
@@ -491,7 +577,7 @@ async def _run_coding_task(
             branch = actual_branch
             file_paths = state.get("file", [])
             if not file_paths:
-                file_paths = [path.strip() for path in log.splitlines() if path.strip().startswith(("src/", "api/", "tests/", "oline-worker/"))][:8] or ["src/tools.py"]
+                file_paths = [path.strip() for path in log.splitlines() if path.strip().startswith(("src/", "api/", "tests/", "oline-worker/"))][:8] or []
             if msg_id:
                 await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Menyiapkan repo & branch... ✅\n[3/5] Edit file... ✅\n[4/5] Commit & push...")
             edited_any = False
@@ -505,15 +591,31 @@ async def _run_coding_task(
                     await update_github_file(branch, fp, new_content, f"feat: {plan_summary[:60]}")
                     edited_any = True
             if not edited_any:
-                marker = (
-                    f"# Fitur baru: {plan_summary}\n"
-                    f"# Perintah asli: {perintah}\n"
-                    "# TODO: implementasi detail sesuai plan.\n"
+                # JANGAN buat file marker placeholder — gagal total, laporkan jelas.
+                ok = False
+                log = (
+                    "Tidak ada perubahan yang bisa dibuat. OpenCode CLI tidak mengubah file "
+                    f"dan fallback tools tidak menemukan target file yang valid.\nDetail: {log[:800]}"
                 )
-                await update_github_file(branch, "src/coding_agent_note.py", marker, f"feat: {plan_summary[:60]}")
         else:
             if msg_id:
                 await update_progress(chat_id, msg_id, f"⏳ Memproses Plan: {plan_summary}\n\n[1/5] Menyiapkan worker... ✅\n[2/5] Menyiapkan repo & branch... ✅\n[3/5] Edit file (OpenCode CLI)... ✅\n[4/5] Commit & push... ✅\n[5/5] Membuat PR...")
+
+        # --- Kalau tidak ada perubahan nyata, jangan buat PR sampah ---
+        if not ok:
+            fail_text = (
+                f"❌ Gagal membuat perubahan untuk plan: {plan_summary}\n\n"
+                f"{str(log)[:1200]}"
+            )
+            if msg_id:
+                await update_progress(chat_id, msg_id, fail_text)
+            else:
+                await send_telegram_message(chat_id, fail_text)
+            await clear_pending_task(chat_id)
+            await clear_progress_message_id(chat_id)
+            await clear_task_start(chat_id)
+            await _notify_vercel_callback(chat_id, "error", str(log)[:500])
+            return
 
         # --- Buat Pull Request ---
         if msg_id:

@@ -39,10 +39,17 @@ if ! command -v git >/dev/null 2>&1; then
   fi
 fi
 
-# --- 3. Pastikan OpenCode CLI ada (via npm global) ---
-if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 && ! command -v opencode >/dev/null 2>&1; then
-  echo "[bootstrap] Menginstall opencode-ai global via npm..."
-  npm install -g opencode-ai >/dev/null 2>&1 || echo "[bootstrap] WARNING: gagal install opencode-ai."
+# --- 3. Pastikan OpenCode CLI ada (install ke prefix lokal, bukan global) ---
+export OPENCODE_PREFIX="${OPENCODE_PREFIX:-$HOME/.opencode}"
+export OPENCODE_CLI_VERSION="${OPENCODE_CLI_VERSION:-1.18.32}"
+if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+  if ! command -v opencode >/dev/null 2>&1 && [ ! -x "$OPENCODE_PREFIX/node_modules/.bin/opencode" ]; then
+    echo "[bootstrap] Menginstall opencode-ai@$OPENCODE_CLI_VERSION ke prefix lokal ($OPENCODE_PREFIX)..."
+    npm install --prefix "$OPENCODE_PREFIX" "opencode-ai@$OPENCODE_CLI_VERSION" >/dev/null 2>&1 \
+      || echo "[bootstrap] WARNING: gagal install opencode-ai ke prefix lokal."
+  fi
+  # Tambahkan binary prefix lokal ke PATH agar shutil.which("opencode") ketemu.
+  export PATH="$OPENCODE_PREFIX/node_modules/.bin:$PATH"
 fi
 
 # --- 4. Jalankan uvicorn ---
