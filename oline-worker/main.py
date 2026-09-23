@@ -424,6 +424,45 @@ async def _git_has_changes() -> bool:
         return True
 
 
+async def _git_ensure_origin(origin_url: str) -> tuple[bool, str]:
+    """
+    Pastikan remote 'origin' ada dan menunjuk ke URL yang benar (dengan token).
+    Render men-clone repo tanpa remote bernama 'origin' — jadi harus di-add bila belum ada.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "remote", "get-url", "origin",
+            cwd=_REPO_ROOT,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except Exception as e:
+        return False, f"gagal cek remote origin: {str(e)}"
+
+    if proc.returncode == 0:
+        # Remote sudah ada → perbarui URL (tambahkan token).
+        cmd = ["git", "remote", "set-url", "origin", origin_url]
+    else:
+        # Remote belum ada → tambahkan.
+        cmd = ["git", "remote", "add", "origin", origin_url]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=_REPO_ROOT,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except Exception as e:
+        return False, f"gagal set remote origin: {str(e)}"
+
+    if proc.returncode != 0:
+        out = (stdout or b"").decode("utf-8", errors="replace")
+        err = (stderr or b"").decode("utf-8", errors="replace")
+        return False, f"gagal set remote origin: {(out + err).strip()[:500]}"
+    return True, "remote origin siap"
+
+
 async def _git_prepare_branch(branch: str) -> tuple[bool, str]:
     """
     Siapkan branch kerja dari origin/main SEBELUM CLI mengedit file, sehingga
@@ -436,8 +475,10 @@ async def _git_prepare_branch(branch: str) -> tuple[bool, str]:
         return False, "GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO belum diset di worker."
 
     origin = f"https://x-access-token:{token}@github.com/{owner}/{repo_name}.git"
+    ok, msg = await _git_ensure_origin(origin)
+    if not ok:
+        return False, msg
     steps = [
-        (["git", "remote", "set-url", "origin", origin], "gagal set remote"),
         (["git", "fetch", "origin"], "gagal fetch origin"),
         (["git", "checkout", "-B", branch, "origin/main"], "gagal buat branch dari origin/main"),
         (["git", "config", "user.email", "oline@bot.local"], "gagal config email"),
@@ -474,8 +515,10 @@ async def _git_commit_and_push(branch: str, commit_msg: str) -> tuple[bool, str]
         return False, "GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO belum diset di worker."
 
     origin = f"https://x-access-token:{token}@github.com/{owner}/{repo_name}.git"
+    ok, msg = await _git_ensure_origin(origin)
+    if not ok:
+        return False, msg
     steps = [
-        (["git", "remote", "set-url", "origin", origin], "gagal set remote"),
         (["git", "add", "-A"], "gagal git add"),
         (["git", "commit", "-m", commit_msg], "gagal commit (mungkin tidak ada perubahan)"),
         (["git", "push", "-u", "origin", branch], "gagal push"),
