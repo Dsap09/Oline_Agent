@@ -505,7 +505,7 @@ async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     deployments = res.get("deployments", [])
-    lines = [f"🚀 Deployment Vercel ({res.get('total', len(deployments))}):"]
+    lines = [f"🚀 Aplikasi/Landing Page yang dibuat Oline ({res.get('total', len(deployments))}):"]
     for i, d in enumerate(deployments, 1):
         name = d.get("name", "tanpa nama")
         url = d.get("url", "")

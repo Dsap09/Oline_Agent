@@ -41,33 +41,71 @@ class TestVercelManagement(unittest.IsolatedAsyncioTestCase):
 
     @patch("httpx.AsyncClient.get", new_callable=AsyncMock)
     async def test_list_vercel_deployments_success(self, mock_get):
-        """Tes list_vercel_deployments mengembalikan status success dan daftar deployment."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
+        """Tes list_vercel_deployments mengembalikan status success dan daftar deployment buatan Oline."""
+        deploy_response = MagicMock()
+        deploy_response.status_code = 200
+        deploy_response.json.return_value = {
             "deployments": [
                 {
                     "uid": "dpl_1111",
                     "name": "landing-page-minuman",
                     "url": "landing-page-minuman.vercel.app",
                     "created": 1700000000,
+                    "meta": {},
+                    "state": "READY",
                 },
                 {
                     "uid": "dpl_2222",
                     "name": "landing-page-fashion",
                     "url": "landing-page-fashion.vercel.app",
                     "created": 1700001000,
+                    "meta": {},
+                    "state": "READY",
+                },
+                {
+                    "uid": "dpl_3333",
+                    "name": "d-reads",
+                    "url": "d-reads.vercel.app",
+                    "created": 1700002000,
+                    "meta": {"githubDeployment": "1", "githubCommitSha": "abc"},
+                    "state": "READY",
+                },
+                {
+                    "uid": "dpl_4444",
+                    "name": "oline-personal",
+                    "url": "oline-personal.vercel.app",
+                    "created": 1700003000,
+                    "meta": {},
+                    "state": "READY",
                 },
             ]
         }
-        mock_get.return_value = mock_response
+        proj_response = MagicMock()
+        proj_response.status_code = 200
+        proj_response.json.return_value = {
+            "projects": [
+                {
+                    "name": "landing-page-minuman",
+                    "targets": {"production": {"alias": ["landing-page-minuman.vercel.app"]}},
+                },
+                {
+                    "name": "landing-page-fashion",
+                    "targets": {"production": {"alias": ["landing-page-fashion.vercel.app"]}},
+                },
+            ]
+        }
+        mock_get.side_effect = [deploy_response, proj_response]
 
         res = await list_vercel_deployments()
         self.assertEqual(res["status"], "success")
+        # Hanya project buatan Oline (tanpa meta github, bukan oline-personal).
         self.assertEqual(res["total"], 2)
         self.assertEqual(len(res["deployments"]), 2)
-        self.assertEqual(res["deployments"][0]["id"], "dpl_1111")
-        self.assertEqual(res["deployments"][0]["name"], "landing-page-minuman")
+        # Diurutkan terbaru dulu.
+        self.assertEqual(res["deployments"][0]["id"], "dpl_2222")
+        self.assertEqual(res["deployments"][0]["name"], "landing-page-fashion")
+        self.assertEqual(res["deployments"][0]["url"], "https://landing-page-fashion.vercel.app")
+        self.assertEqual(res["deployments"][1]["id"], "dpl_1111")
 
     @patch("httpx.AsyncClient.delete", new_callable=AsyncMock)
     async def test_delete_vercel_deployment_success(self, mock_delete):

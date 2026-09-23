@@ -2234,7 +2234,13 @@ async def deploy_to_vercel(
 
 async def list_vercel_deployments() -> dict[str, Any]:
     """
-    Mengambil daftar deployment yang ada di Vercel via REST API v13.
+    Mengambil daftar deployment Vercel yang DIBUAT OLINE (aplikasi/landing page),
+    bukan seluruh project di akun. Filter:
+    - Exclude project bot utama (`oline-personal`).
+    - Exclude deployment yang terhubung GitHub (`meta.githubDeployment` /
+      `meta.githubCommitSha`) karena itu project user lain yang di-deploy via repo,
+      bukan buatan Oline (deploy_to_vercel selalu memakai API /v13 tanpa GitHub).
+    - Hanya state READY, lalu dedupe per nama project (ambil deployment terbaru).
     """
     token = os.environ.get("VERCEL_API_TOKEN", "").strip()
     if not token:
@@ -2247,23 +2253,79 @@ async def list_vercel_deployments() -> dict[str, Any]:
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get("https://api.vercel.com/v6/deployments", headers=headers)
+            resp = await client.get(
+                "https://api.vercel.com/v6/deployments?limit=100",
+                headers=headers,
+            )
             if resp.status_code == 200:
                 data = resp.json()
                 raw_deployments = data.get("deployments", [])
                 if not raw_deployments:
                     return {"message": "Belum ada deployment di Vercel."}
 
-                deployments = []
-                for d in raw_deployments[:10]:
-                    raw_url = d.get("url", "")
-                    url = f"https://{raw_url}" if raw_url and not raw_url.startswith("http") else raw_url
-                    deployments.append({
-                        "id": d.get("uid") or d.get("id", ""),
-                        "name": d.get("name", "tanpa nama"),
-                        "url": url,
-                        "created_at": d.get("created"),
-                    })
+                # Ambil alias production per project (domain stabil) sekaligus.
+                production_aliases: dict[str, str] = {}
+                try:
+                    proj_resp = await client.get(
+                        "https://api.vercel.com/v9/projects?limit=100",
+                        headers=headers,
+                    )
+                    if proj_resp.status_code == 200:
+                        for p in proj_resp.json().get("projects", []):
+                            prod = (p.get("targets") or {}).get("production") or {}
+                            aliases = prod.get("alias") or []
+                            if not aliases:
+                                continue
+                            # Pilih alias "cantik": tanpa suffix team/branch.
+                            best = next(
+                                (a for a in aliases if "donis-projects" not in a and "-git-" not in a),
+                                aliases[0],
+                            )
+                            production_aliases[p.get("name", "")] = best
+                except Exception as e:
+                    logger.warning("Gagal ambil project aliases Vercel: %s", str(e))
+
+                by_project: dict[str, Any] = {}
+                for d in raw_deployments:
+                    name = d.get("name", "") or ""
+                    meta = d.get("meta") or {}
+                    state = d.get("state", "") or ""
+
+                    # 1) Bukan project bot utama.
+                    if name == "oline-personal":
+                        continue
+                    # 2) Bukan buatan Oline: terhubung GitHub (project user lain).
+                    if meta.get("githubDeployment") or meta.get("githubCommitSha"):
+                        continue
+                    # 3) Hanya deployment yang selesai.
+                    if state and state != "READY":
+                        continue
+                    if not name:
+                        continue
+
+                    raw_url = d.get("url", "") or ""
+                    deployment_url = f"https://{raw_url}" if raw_url and not raw_url.startswith("http") else raw_url
+                    # Domain production stabil dari alias project; fallback ke deployment URL.
+                    url = f"https://{production_aliases[name]}" if production_aliases.get(name) else deployment_url
+                    created = d.get("created") or 0
+
+                    existing = by_project.get(name)
+                    if existing is None or int(created) > int(existing.get("created_at") or 0):
+                        by_project[name] = {
+                            "id": d.get("uid") or d.get("id", ""),
+                            "name": name,
+                            "url": url,
+                            "deployment_url": deployment_url,
+                            "created_at": created,
+                        }
+
+                deployments = sorted(
+                    by_project.values(),
+                    key=lambda x: int(x.get("created_at") or 0),
+                    reverse=True,
+                )
+                if not deployments:
+                    return {"message": "Belum ada aplikasi/landing page yang dibuat Oline di Vercel."}
 
                 return {
                     "status": "success",
