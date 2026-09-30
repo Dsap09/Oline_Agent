@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dministar - Otomasi Perusahaan Berbasis AI Agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>:root{
+  --blue-900:#0a2540;
+  --blue-700:#0b3b74;
+  --blue-500:#1a73e8;
+  --blue-400:#4f9cf9;
+  --blue-100:#e8f0fe;
+  --white:#ffffff;
+  --text:#1f2d3d;
+  --muted:#5b6b7c;
+  --gradient:linear-gradient(135deg,#1a73e8 0%,#4f9cf9 50%,#7cb8ff 100%);
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+body{
+  font-family:'Manrope',sans-serif;
+  color:var(--text);
+  background:var(--white);
+  line-height:1.6;
+  overflow-x:hidden;
+}
+h1,h2,h3,h4{font-family:'Space Grotesk',sans-serif;line-height:1.2;}
+a{text-decoration:none;color:inherit;}
+.container{max-width:1140px;margin:0 auto;padding:0 24px;}
+
+/* NAVBAR */
+.navbar{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.85);backdrop-filter:blur(12px);border-bottom:1px solid rgba(10,37,64,.08);}
+.nav-wrap{display:flex;align-items:center;justify-content:space-between;height:72px;}
+.logo{display:flex;align-items:center;gap:10px;}
+.logo-mark{width:28px;height:28px;border-radius:8px;background:var(--gradient);position:relative;display:inline-block;}
+.logo-mark::after{content:'';position:absolute;width:10px;height:10px;border-radius:50%;background:#fff;top:50%;left:50%;transform:translate(-50%,-50%);box-shadow:0 0 12px rgba(255,255,255,.8);}
+.logo-text{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.3rem;color:var(--blue-900);}
+.nav-links{display:flex;gap:28px;align-items:center;}
+.nav-links a{font-weight:600;font-size:.95rem;color:var(--text);transition:color .2s;}
+.nav-links a:hover{color:var(--blue-500);}
+.nav-actions{display:flex;align-items:center;gap:12px;}
+.btn{border:none;cursor:pointer;padding:11px 22px;border-radius:10px;font-family:'Manrope',sans-serif;font-weight:700;font-size:.95rem;display:inline-block;transition:transform .2s,box-shadow .2s;}
+.btn:hover{transform:translateY(-2px);}
+.btn-primary{background:var(--gradient);color:#fff;box-shadow:0 8px 20px rgba(26,115,232,.3);}
+.btn-ghost{color:var(--blue-700);}
+.btn-outline{background:transparent;color:var(--blue-500);border:2px solid var(--blue-500);}
+.btn-white{background:#fff;color:var(--blue-700);}
+.btn-outline-light{background:transparent;color:#fff;border:2px solid rgba(255,255,255,.7);}
+.btn-lg{padding:14px 32px;font-size:1.05rem;}
+.hamburger{display:none;background:none;border:none;font-size:1.6rem;color:var(--blue-900);cursor:pointer;}
+
+/* HERO */
+.hero{position:relative;padding:80px 0 100px;background:linear-gradient(180deg,#f5f9ff 0%,#ffffff 100%);overflow:hidden;}
+.hero-glow{position:absolute;width:600px;height:600px;border-radius:50%;background:radial-gradient(circle,rgba(79,156,249,.25),transparent 70%);top:-200px;right:-100px;filter:blur(40px);}
+.hero-wrap{display:grid;grid-template-columns:1.1fr .9fr;gap:60px;align-items:center;position:relative;z-index:2;}
+.badge{display:inline-block;background:var(--blue-100);color:var(--blue-700);font-weight:700;font-size:.85rem;padding:8px 16px;border-radius:30px;margin-bottom:20px;}
+.hero h1{font-size:3rem;font-weight:700;color:var(--blue-900);margin-bottom:20px;}
+.hero p{font-size:1.15rem;color:var(--muted);margin-bottom:32px;max-width:520px;}
+.hero-cta{display:flex;gap:16px;margin-bottom:40px;flex-wrap:wrap;}
+.hero-stats{display:flex;gap:40px;flex-wrap:wrap;}
+.stat strong{display:block;font-family:'Space Grotesk',sans-serif;font-size:1.7rem;color:var(--blue-900);}
+.stat span{font-size:.9rem;color:var(--muted);}
+
+/* HERO VISUAL */
+.hero-visual{display:flex;align-items:center;justify-content:center;position:relative;min-height:420px;}
+.ai-orbit{position:relative;width:260px;height:260px;display:flex;align-items:center;justify-content:center;}
+.orbit-core{width:100px;height:100px;border-radius:50%;background:var(--gradient);display:flex;align-items:center;justify-content:center;color:#fff;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.6rem;box-shadow:0 20px 50px rgba(26,115,232,.4);position:relative;z-index:3;}
+.ring{position:absolute;border-radius:50%;border:2px dashed rgba(26,115,232,.35);}
+.r1{width:180px;height:180px;animation:spin 12s linear infinite;}
+.r2{width:250px;height:250px;animation:spin 20s linear infinite reverse;}
+.dot{position:absolute;width:14px;height:14px;border-radius:50%;background:var(--blue-400);box-shadow:0 0 16px rgba(79,156,249,.9);}
+.d1{top:-6px;left:50%;}
+.d2{bottom:20px;right:10px;}
+.d3{top:50%;left:-8px;}
+@keyframes spin{from{transform:rotate(0);}to{transform:rotate(360deg);}}
+.float-card{position:absolute;background:#fff;border-radius:12px;padding:10px 16px;font-weight:700;font-size:.85rem;box-shadow:0 12px 30px rgba(10,37,64,.12);animation:float 4s ease-in-out infinite;}
+.fc1{top:30px;left:-20px;}
+.fc2{bottom:40px;right:-30px;animation-delay:1s;}
+.fc3{top:55%;left:-50px;animation-delay:2s;}
+@keyframes float{0%,100%{transform:translateY(0);}50%{transform:translateY(-12px);}}
+
+/* SECTION */
+.section{padding:90px 0;}
+.section-alt{background:#f5f9ff;}
+.section-head{text-align:center;max-width:680px;margin:0 auto 56px;}
+.section-head.left{text-align:left;margin:0 0 40px;}
+.kicker{display:inline-block;color:var(--blue-500);font-weight:800;font-size:.85rem;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:14px;}
+.section-head h2{font-size:2.4rem;color:var(--blue-900);margin-bottom:16px;}
+.section-head p{color:var(--muted);font-size:1.05rem;}
+
+/* FEATURES */
+.features-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:24px;}
+.feature-card{background:#fff;border:1px solid rgba(10,37,64,.08);border-radius:16px;padding:30px 24px;transition:transform .25s,box-shadow .25s;}
+.feature-card:hover{transform:translateY(-6px);box-shadow:0 20px 40px rgba(10,37,64,.1);}
+.feature-icon{width:52px;height:52px;border-radius:14px;background:var(--blue-100);display:flex;align-items:center;justify-content:center;font-size:1.5rem;margin-bottom:18px;}
+.feature-card h3{font-size:1.2rem;color:var(--blue-900);margin-bottom:10px;}
+.feature-card p{color:var(--muted);font-size:.95rem;}
+
+/* STEPS */
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;}
+.step{background:#fff;border-radius:16px;padding:34px 28px;border:1px solid rgba(10,37,64,.08);text-align:center;}
+.step-num{width:52px;height:52px;border-radius:50%;background:var(--gradient);color:#fff;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.4rem;display:flex;align-items:center;justify-content:center;margin:0 auto 18px;box-shadow:0 10px 24px rgba(26,115,232,.3);}
+.step h3{font-size:1.2rem;color:var(--blue-900);margin-bottom:10px;}
+.step p{color:var(--muted);font-size:.95rem;}
+
+/* KEUNGGULAN */
+.keunggulan-wrap{display:grid;grid-template-columns:.9fr 1.1fr;gap:60px;align-items:start;}
+.keunggulan-list{display:grid;gap:20px;}
+.keunggulan-item{display:flex;gap:16px;background:#fff;border:1px solid rgba(10,37,64,.08);border-radius:14px;padding:20px 22px;align-items:flex-start;}
+.check{width:32px;height:32px;border-radius:50%;background:var(--blue-100);color:var(--blue-500);display:flex;align-items:center;justify-content:center;font-weight:800;flex-shrink:0;}
+.keunggulan-item strong{display:block;font-family:'Space Grotesk',sans-serif;color:var(--blue-900);margin-bottom:4px;}
+.keunggulan-item p{color:var(--muted);font-size:.92rem;}
+
+/* TESTIMONI */
+.testi-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;}
+.testi-card{background:#fff;border-radius:16px;padding:30px 26px;border:1px solid rgba(10,37,64,.08);display:flex;flex-direction:column;gap:22px;}
+.testi-card p{color:var(--text);font-size:.98rem;font-style:italic;}
+.testi-author{display:flex;align-items:center;gap:14px;margin-top:auto;}
+.avatar{width:46px;height:46px;border-radius:50%;background:var(--gradient);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-family:'Space Grotesk',sans-serif;}
+.testi-author strong{display:block;color:var(--blue-900);}
+.testi-author span{font-size:.85rem;color:var(--muted);}
+
+/* CTA */
+.cta-section{padding:40px 0 90px;}
+.cta-box{background:var(--gradient);border-radius:24px;padding:70px 40px;text-align:center;color:#fff;}
+.cta-box h2{font-size:2.4rem;margin-bottom:14px;}
+.cta-box p{font-size:1.1rem;margin-bottom:32px;opacity:.95;}
+.cta-actions{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;}
+
+/* FOOTER */
+.footer{background:var(--blue-900);color:#c9d6e5;padding:70px 0 0;}
+.footer-wrap{display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr;gap:40px;padding-bottom:50px;}
+.footer-brand p{margin-top:16px;font-size:.95rem;max-width:300px;}
+.footer .logo-text{color:#fff;}
+.footer-col h4{color:#fff;font-size:1.05rem;margin-bottom:16px;}
+.footer-col a{display:block;margin-bottom:10px;font-size:.95rem;transition:color .2s;}
+.footer-col a:hover{color:#7cb8ff;}
+.footer-bottom{border-top:1px solid rgba(255,255,255,.12);padding:24px 0;font-size:.9rem;}
+
+/* RESPONSIVE */
+@media(max-width:960px){
+  .hero-wrap{grid-template-columns:1fr;gap:40px;}
+  .hero h1{font-size:2.4rem;}
+  .features-grid{grid-template-columns:repeat(2,1fr);}
+  .keunggulan-wrap{grid-template-columns:1fr;gap:40px;}
+  .footer-wrap{grid-template-columns:1fr 1fr;}
+  .hero-visual{min-height:360px;}
+}
+@media(max-width:640px){
+  .nav-links{display:none;position:absolute;top:72px;left:0;right:0;background:#fff;flex-direction:column;padding:20px;box-shadow:0 20px 30px rgba(10,37,64,.1);}
+  .nav-links.open{display:flex;}
+  .hamburger{display:block;}
+  .nav-actions .btn-ghost{display:none;}
+  .section{padding:60px 0;}
+  .section-head h2,.cta-box h2{font-size:1.8rem;}
+  .features-grid,.steps,.testi-grid{grid-template-columns:1fr;}
+  .hero-stats{gap:24px;}
+  .fc1{left:0;}
+  .fc2{right:0;}
+  .fc3{left:0;}
+}</style></head>
+<body>
+
+<header class="navbar">
+  <div class="container nav-wrap">
+    <div class="logo">
+      <span class="logo-mark"></span>
+      <span class="logo-text">Dministar</span>
+    </div>
+    <nav class="nav-links" id="navLinks">
+      <a href="#fitur">Fitur</a>
+      <a href="#carakerja">Cara Kerja</a>
+      <a href="#keunggulan">Keunggulan</a>
+      <a href="#testimoni">Testimoni</a>
+    </nav>
+    <div class="nav-actions">
+      <a href="#cta" class="btn btn-ghost">Masuk</a>
+      <a href="#cta" class="btn btn-primary">Coba Gratis</a>
+      <button class="hamburger" id="hamburger" aria-label="Menu">☰</button>
+    </div>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="hero-glow"></div>
+  <div class="container hero-wrap">
+    <div class="hero-content">
+      <span class="badge">⚡ Otomasi AI untuk Perusahaan Modern</span>
+      <h1>Jalankan Operasional Perusahaan Tanpa Kerja Manual yang Melelahkan</h1>
+      <p>Dministar menghadirkan AI Agent yang bekerja 24/7 untuk mengotomasi alur kerja, mengintegrasikan sistem, dan menyajikan analitik real-time. Hemat waktu, turunkan biaya, dan skala bisnis Anda lebih cepat.</p>
+      <div class="hero-cta">
+        <a href="#cta" class="btn btn-primary btn-lg">Coba Gratis</a>
+        <a href="#fitur" class="btn btn-outline btn-lg">Demo</a>
+      </div>
+      <div class="hero-stats">
+        <div class="stat"><strong>12rb+</strong><span>Jam kerja dihemat</span></div>
+        <div class="stat"><strong>40%</strong><span>Efisiensi operasional</span></div>
+        <div class="stat"><strong>3x</strong><span>Skalabilitas lebih cepat</span></div>
+      </div>
+    </div>
+    <div class="hero-visual">
+      <div class="ai-orbit">
+        <div class="orbit-core">AI</div>
+        <span class="dot d1"></span>
+        <span class="dot d2"></span>
+        <span class="dot d3"></span>
+        <span class="ring r1"></span>
+        <span class="ring r2"></span>
+      </div>
+      <div class="float-card fc1">✅ Tugas selesai otomatis</div>
+      <div class="float-card fc2">📊 Analitik real-time</div>
+      <div class="float-card fc3">🔗 Integrasi sistem</div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="fitur">
+  <div class="container">
+    <div class="section-head">
+      <span class="kicker">Fitur Utama</span>
+      <h2>Semua yang Perusahaan Anda Butuhkan dalam Satu Platform</h2>
+      <p>Dibangun untuk menggantikan proses manual yang lambat dengan AI yang andal dan terukur.</p>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">⚙️</div>
+        <h3>Otomasi Alur Kerja</h3>
+        <p>Rancang alur kerja otomatis untuk tugas berulang seperti input data, approval, dan pengiriman laporan tanpa sentuhan manual.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🤖</div>
+        <h3>AI Agent 24/7</h3>
+        <p>Asisten AI yang terus aktif menjawab, memproses, dan menyelesaikan pekerjaan kapan pun, bahkan saat tim Anda beristirahat.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔗</div>
+        <h3>Integrasi Sistem</h3>
+        <p>Hubungkan CRM, ERP, email, dan aplikasi bisnis Anda ke dalam satu ekosistem yang saling terhubung secara mulus.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📈</div>
+        <h3>Analitik Real-Time</h3>
+        <p>Pantau performa operasional lewat dashboard interaktif dengan data terkini untuk keputusan bisnis yang lebih cepat dan tepat.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-alt" id="carakerja">
+  <div class="container">
+    <div class="section-head">
+      <span class="kicker">Cara Kerja</span>
+      <h2>Mulai Otomasi dalam 3 Langkah Sederhana</h2>
+      <p>Tanpa ribet, tanpa proses panjang. Perusahaan Anda bisa langsung berjalan lebih efisien.</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>Hubungkan Sistem Anda</h3>
+        <p>Integrasikan aplikasi dan sumber data perusahaan dalam hitungan menit.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>Atur Agen AI</h3>
+        <p>Tentukan alur kerja dan tugas yang ingin diotomasi sesuai kebutuhan tim Anda.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>Pantau & Skalakan</h3>
+        <p>Lihat hasilnya lewat analitik real-time dan tingkatkan otomasi seiring pertumbuhan bisnis.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="keunggulan">
+  <div class="container keunggulan-wrap">
+    <div class="section-head left">
+      <span class="kicker">Keunggulan</span>
+      <h2>Kenapa Perusahaan Memilih Dministar</h2>
+      <p>Solusi yang dirancang untuk hasil nyata, bukan sekadar janji.</p>
+    </div>
+    <div class="keunggulan-list">
+      <div class="keunggulan-item"><span class="check">✔</span><div><strong>Hemat Waktu</strong><p>Kurangi jam kerja manual hingga 40% dan fokuskan tim pada hal strategis.</p></div></div>
+      <div class="keunggulan-item"><span class="check">✔</span><div><strong>Efisiensi Biaya</strong><p>Kurangi kebutuhan proses berulang dan optimalkan sumber daya secara signifikan.</p></div></div>
+      <div class="keunggulan-item"><span class="check">✔</span><div><strong>Skalabilitas Tinggi</strong><p>Platform yang tumbuh bersama bisnis Anda tanpa hambatan teknis.</p></div></div>
+      <div class="keunggulan-item"><span class="check">✔</span><div><strong>Keamanan Terjaga</strong><p>Data perusahaan terlindungi dengan standar keamanan terbaik di kelasnya.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-alt" id="testimoni">
+  <div class="container">
+    <div class="section-head">
+      <span class="kicker">Testimoni</span>
+      <h2>Dipercaya oleh Tim yang Berorientasi Hasil</h2>
+    </div>
+    <div class="testi-grid">
+      <div class="testi-card">
+        <p>"Sejak memakai Dministar, proses approval dan laporan kami berjalan otomatis. Tim bisa fokus ke strategi, bukan pekerjaan administratif."</p>
+        <div class="testi-author"><span class="avatar">RA</span><div><strong>Rizky Aditya</strong><span>COO, Fintech Nusantara</span></div></div>
+      </div>
+      <div class="testi-card">
+        <p>"AI Agent 24/7-nya benar-benar membantu. Pertanyaan pelanggan terjawab cepat di luar jam kerja, dan analitiknya sangat membantu pengambilan keputusan."</p>
+        <div class="testi-author"><span class="avatar">SM</span><div><strong>Sari Mahendra</strong><span>Head of Operations, Retail Group</span></div></div>
+      </div>
+      <div class="testi-card">
+        <p>"Integrasinya mulus dan skalabilitasnya luar biasa. Dalam 6 bulan, efisiensi operasional kami naik drastis."</p>
+        <div class="testi-author"><span class="avatar">DP</span><div><strong>Dimas Pratama</strong><span>CEO, Startup Logistik</span></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section cta-section" id="cta">
+  <div class="container cta-box">
+    <h2>Siap Mengotomasi Perusahaan Anda?</h2>
+    <p>Mulai sekarang dan rasakan perbedaannya. Gratis untuk 14 hari pertama, tanpa kartu kredit.</p>
+    <div class="cta-actions">
+      <a href="#" class="btn btn-white btn-lg">Coba Gratis</a>
+      <a href="#fitur" class="btn btn-outline-light btn-lg">Demo</a>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="container footer-wrap">
+    <div class="footer-brand">
+      <div class="logo"><span class="logo-mark"></span><span class="logo-text">Dministar</span></div>
+      <p>Otomasi perusahaan berbasis AI Agent untuk masa depan bisnis yang lebih efisien.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Produk</h4>
+      <a href="#fitur">Fitur</a>
+      <a href="#carakerja">Cara Kerja</a>
+      <a href="#keunggulan">Keunggulan</a>
+    </div>
+    <div class="footer-col">
+      <h4>Perusahaan</h4>
+      <a href="#">Tentang Kami</a>
+      <a href="#">Karier</a>
+      <a href="#">Kontak</a>
+    </div>
+    <div class="footer-col">
+      <h4>Legal</h4>
+      <a href="#">Kebijakan Privasi</a>
+      <a href="#">Syarat Layanan</a>
+    </div>
+  </div>
+  <div class="container footer-bottom">
+    <span>© 2026 Dministar. Seluruh hak cipta dilindungi.</span>
+  </div>
+</footer>
+
+<script>const hamburger = document.getElementById('hamburger');
+const navLinks = document.getElementById('navLinks');
+hamburger.addEventListener('click', () => {
+  navLinks.classList.toggle('open');
+});</script></body>
+</html>
