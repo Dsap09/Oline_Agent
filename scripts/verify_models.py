@@ -1,12 +1,21 @@
 """
-Verifikasi function calling untuk semua model di MODEL_CATALOG (Tahap 10 brief).
+Verifikasi function calling & kompatibilitas tools untuk semua model di MODEL_CATALOG.
 
-Mengirim satu permintaan tool-call sederhana ke tiap model (OpenCode Go & DeepInfra)
-dan melaporkan PASS/FAIL. Jalankan manual dengan .env berisi API key asli:
+Untuk tiap model (OpenCode Go & DeepInfra), script menguji beberapa tool NYATA yang
+mewakili bentuk argumen berbeda:
+  - preview_with_codepen : argumen besar (html/css/js) — kritis untuk landing page
+  - get_weather_forecast : argumen string sederhana
+  - save_memory_to_notion: enum + teks
+  - check_ai_quota       : tanpa argumen
 
+Catatan provider:
+- Model "thinking" (mis. DeepSeek V4 Pro) menolak forced tool_choice
+  ("Thinking mode does not support this tool_choice"), jadi otomatis diuji mode auto.
+
+Jalankan manual dengan .env berisi API key asli:
     python scripts/verify_models.py
 
-Exit code 0 bila semua model yang key-nya tersedia lolos; 1 bila ada yang gagal.
+Exit code 0 bila semua model lolos semua probe; 1 bila ada yang gagal.
 """
 
 import json
@@ -27,23 +36,6 @@ load_dotenv()
 
 from src.config import MODEL_CATALOG, get_model_label
 
-DUMMY_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "cek_cuaca",
-        "description": "Mengambil cuaca terkini untuk sebuah kota.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "kota": {"type": "string", "description": "Nama kota, misal Jakarta"},
-            },
-            "required": ["kota"],
-        },
-    },
-}
-
-PROMPT = "Panggil tool cek_cuaca untuk kota Jakarta."
-
 PROVIDER_BASE_URLS = {
     "opencode_go": "https://opencode.ai/zen/go/v1",
     "deepinfra": "https://api.deepinfra.com/v1/openai",
@@ -53,6 +45,41 @@ PROVIDER_ENV_KEYS = {
     "opencode_go": "OPENCODE_GO_API_KEY",
     "deepinfra": "DEEPINFRA_API_KEY",
 }
+
+# Probe tool nyata dari registry Oline (lihat src/tools.py TOOL_DECLARATIONS).
+TOOL_PROBES = [
+    {
+        "name": "preview_with_codepen",
+        "prompt": (
+            "Panggil tool preview_with_codepen untuk membuat landing page sederhana "
+            "kafe bernama 'Kopi Senja'. Sertakan parameter title, html, css, dan js. "
+            "Gunakan HTML/CSS/JS sederhana saja (masing-masing kurang dari 2000 karakter)."
+        ),
+        "required": ["title", "html", "css"],
+        "forced": False,  # model thinking menolak forced tool_choice
+    },
+    {
+        "name": "get_weather_forecast",
+        "prompt": "Panggil tool get_weather_forecast untuk kota Bandung.",
+        "required": ["city"],
+        "forced": True,
+    },
+    {
+        "name": "save_memory_to_notion",
+        "prompt": (
+            "Panggil tool save_memory_to_notion untuk menyimpan preferensi user "
+            "'suka kopi hitam tanpa gula'. Gunakan memory_type='Preferensi'."
+        ),
+        "required": ["title", "content"],
+        "forced": True,
+    },
+    {
+        "name": "check_ai_quota",
+        "prompt": "Panggil tool check_ai_quota untuk melihat kuota AI.",
+        "required": [],
+        "forced": True,
+    },
+]
 
 
 def _client_for(provider: str):
@@ -78,57 +105,80 @@ def _client_for(provider: str):
     return OpenAI(api_key=api_key, base_url=PROVIDER_BASE_URLS[provider]), ""
 
 
-def _verify_one(client, entry: dict):
-    """Uji satu model memanggil tool. Returns (ok, detail)."""
-    model_id = entry["model_id"]
-    temperature = entry.get("temperature", 0.0)
-    messages = [{"role": "user", "content": PROMPT}]
-    tools = [DUMMY_TOOL]
-    forced_choice = {"type": "function", "function": {"name": "cek_cuaca"}}
+def _openai_tool(name: str):
+    """Ambil deklarasi tool nyata Oline dalam format OpenAI."""
+    from src.tools import TOOL_DECLARATIONS, convert_tools_to_openai_format
 
-    try:
-        response = client.chat.completions.create(
+    for decl in TOOL_DECLARATIONS:
+        if isinstance(decl, dict) and decl.get("name") == name:
+            converted = convert_tools_to_openai_format([decl])
+            return converted[0] if converted else None
+    return None
+
+
+def _verify_probe(client, model_id: str, probe: dict, temperature: float):
+    """Uji satu model memanggil satu tool nyata. Returns (ok, detail)."""
+    tool = _openai_tool(probe["name"])
+    if not tool:
+        return False, f"deklarasi tool {probe['name']} tidak ditemukan"
+
+    messages = [{"role": "user", "content": probe["prompt"]}]
+    tools = [tool]
+
+    def _call(choice):
+        return client.chat.completions.create(
             model=model_id,
             messages=messages,
             tools=tools,
-            tool_choice=forced_choice,
+            tool_choice=choice,
             temperature=temperature,
-            max_tokens=200,
-            timeout=60.0,
+            # HTML/CSS/JS landing butuh budget besar; 4096 memotong JSON argumen.
+            max_tokens=16384,
+            timeout=180.0,
         )
-    except Exception as forced_err:
-        # Sebagian provider menolak tool_choice terpaksa; coba mode auto.
+
+    response = None
+    if probe["forced"]:
+        forced_choice = {"type": "function", "function": {"name": probe["name"]}}
         try:
-            response = client.chat.completions.create(
-                model=model_id,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                temperature=temperature,
-                max_tokens=200,
-                timeout=60.0,
-            )
+            response = _call(forced_choice)
         except Exception as e:
-            return False, f"request gagal: {str(e)[:160]} (forced: {str(forced_err)[:80]})"
+            # Sebagian provider/model menolak forced tool_choice -> fallback auto.
+            if "tool_choice" not in str(e).lower():
+                return False, f"request gagal: {str(e)[:140]}"
+
+    if response is None:
+        try:
+            response = _call("auto")
+        except Exception as e:
+            return False, f"request gagal (auto): {str(e)[:140]}"
 
     message = response.choices[0].message
     tool_calls = getattr(message, "tool_calls", None)
     if not tool_calls:
-        return False, "tidak ada tool_calls pada respons"
+        content = (message.content or "")[:80].replace("\n", " ")
+        return False, f"tidak memanggil tool (jawab: {content!r})"
 
     func = getattr(tool_calls[0], "function", None)
     name = getattr(func, "name", "") if func else ""
-    if name != "cek_cuaca":
-        return False, f"memanggil tool yang salah: {name or '(kosong)'}"
+    if name != probe["name"]:
+        return False, f"memanggil tool salah: {name or '(kosong)'}"
 
+    raw_args = getattr(func, "arguments", "") or ""
+    finish_reason = response.choices[0].finish_reason
     try:
-        args = json.loads(getattr(func, "arguments", "") or "{}")
-    except (json.JSONDecodeError, TypeError):
-        args = {}
-    if not args.get("kota"):
-        return False, "argumen 'kota' kosong"
+        args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+    except json.JSONDecodeError:
+        return False, f"JSON argumen tidak valid/terpotong (finish_reason={finish_reason})"
+    if not isinstance(args, dict):
+        return False, "argumen bukan objek JSON"
 
-    return True, f"tool_calls OK (kota={args.get('kota')})"
+    for field in probe.get("required", []):
+        value = args.get(field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return False, f"argumen '{field}' kosong"
+
+    return True, "OK"
 
 
 def main() -> int:
@@ -137,7 +187,7 @@ def main() -> int:
     skipped = 0
     failed = 0
 
-    print("Verifikasi function calling model manual (/models)\n")
+    print("Matriks kompatibilitas tool untuk model manual (/models)\n")
     for provider, group in MODEL_CATALOG.items():
         client, err = _client_for(provider)
         print(f"━━━ {group.get('label', provider)} ━━━")
@@ -145,19 +195,31 @@ def main() -> int:
             skipped += len(group.get("models", []))
             print(f"  SKIP semua model: {err}\n")
             continue
+
         for entry in group.get("models", []):
             total += 1
-            key = entry["key"]
-            try:
-                ok, detail = _verify_one(client, entry)
-            except Exception as e:
-                ok, detail = False, f"error tak terduga: {str(e)[:160]}"
-            status = "PASS" if ok else "FAIL"
-            if ok:
-                passed += 1
-            else:
+            temperature = entry.get("temperature", 0.7)
+            model_id = entry["model_id"]
+            failures = []
+            ok_count = 0
+            for probe in TOOL_PROBES:
+                try:
+                    ok, detail = _verify_probe(client, model_id, probe, temperature)
+                except Exception as e:
+                    ok, detail = False, f"error tak terduga: {str(e)[:120]}"
+                if ok:
+                    ok_count += 1
+                else:
+                    failures.append(f"{probe['name']}: {detail}")
+
+            status = "PASS" if not failures else "FAIL"
+            if failures:
                 failed += 1
-            print(f"  [{status}] {get_model_label(key)} ({entry['model_id']}) — {detail}")
+                detail = " | ".join(failures)
+            else:
+                passed += 1
+                detail = f"{ok_count}/{len(TOOL_PROBES)} tools OK"
+            print(f"  [{status}] {get_model_label(entry['key'])} ({model_id}) — {detail}")
         print("")
 
     print(f"Ringkasan: {passed} PASS, {failed} FAIL, {skipped} SKIP")

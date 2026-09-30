@@ -121,7 +121,9 @@ async def chat_opencode_go(
         "model": model_name,
         "messages": messages,
         "temperature": temperature,
-        "max_tokens": 4096,
+        # Landing page menulis HTML/CSS/JS penuh di argumen tool; 4096 terlalu kecil
+        # dan menyebabkan JSON argumen terpotong (tool gagal/DSML bocor).
+        "max_tokens": 16384,
     }
     if openai_tools:
         kwargs["tools"] = openai_tools
@@ -186,12 +188,32 @@ async def chat_opencode_go(
             func_args_str = getattr(func_obj, "arguments", "{}") if func_obj else "{}"
 
             if isinstance(func_args_str, str):
-                try:
-                    func_args = json.loads(func_args_str) if func_args_str else {}
-                except json.JSONDecodeError:
+                if func_args_str.strip():
+                    try:
+                        func_args = json.loads(func_args_str)
+                    except json.JSONDecodeError:
+                        func_args = None
+                else:
                     func_args = {}
             else:
                 func_args = func_args_str or {}
+
+            if not isinstance(func_args, dict):
+                # Argumen tool tidak valid/terpotong: JANGAN eksekusi dengan {} —
+                # beri tahu model lewat tool result agar ia mengulang dengan JSON valid.
+                logger.warning(
+                    "Argumen tool %s tidak valid/terpotong via OpenCode Go; minta ulang.",
+                    func_name,
+                )
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": json.dumps({
+                        "error": "JSON argumen tool tidak valid atau terpotong. "
+                                 "Panggil ulang tool dengan JSON lengkap dan valid."
+                    }, ensure_ascii=False),
+                })
+                continue
 
             try:
                 tool_result = await execute_tool(func_name, func_args, chat_id=chat_id)
@@ -236,7 +258,7 @@ async def chat_opencode_go(
                 "model": model_name,
                 "messages": messages,
                 "temperature": temperature,
-                "max_tokens": 8192,
+                "max_tokens": 16384,
                 "tools": openai_tools,
                 "tool_choice": "auto",
             }
@@ -265,10 +287,22 @@ async def chat_opencode_go(
                 for tc in forced_calls:
                     func_name = getattr(getattr(tc, "function", None), "name", "")
                     raw_args = getattr(getattr(tc, "function", None), "arguments", "{}")
-                    try:
-                        func_args = json.loads(raw_args) if raw_args else {}
-                    except json.JSONDecodeError:
-                        func_args = {}
+                    if isinstance(raw_args, str):
+                        try:
+                            func_args = json.loads(raw_args) if raw_args.strip() else {}
+                        except json.JSONDecodeError:
+                            func_args = None
+                    else:
+                        func_args = raw_args or {}
+                    if not isinstance(func_args, dict):
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": getattr(tc, "id", ""),
+                            "content": json.dumps({
+                                "error": "JSON argumen tool tidak valid atau terpotong."
+                            }, ensure_ascii=False),
+                        })
+                        continue
                     try:
                         tool_result = await execute_tool(func_name, func_args, chat_id=chat_id)
                     except Exception as ex:

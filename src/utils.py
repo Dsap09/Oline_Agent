@@ -205,6 +205,12 @@ def clean_tool_call_text(text: str) -> str:
     if not text or not isinstance(text, str):
         return ""
 
+    # DeepSeek DSML tool-call markup (kadang bocor sebagai teks, bukan structured tool_calls).
+    # Buang dari penanda DSML pertama hingga akhir — isinya bukan teks untuk user.
+    if re.search(r"<[|｜]+\s*DSML", text, re.IGNORECASE):
+        text = re.split(r"<[|｜]+\s*DSML", text, maxsplit=1, flags=re.IGNORECASE)[0]
+    text = re.sub(r"</?[|｜]+\s*DSML[^>]*>", "", text, flags=re.IGNORECASE)
+
     for tag in [
         "tool_call", "function_call", "function_calls", "tool_calls",
         "tool", "invoke", "call", "use_mcp_tool", "component",

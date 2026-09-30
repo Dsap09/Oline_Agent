@@ -80,6 +80,26 @@ class TestCleanToolCallText(unittest.TestCase):
         raw = "<tool_call>get_weather_forecast(city='Jakarta')</tool_call>\nCuaca Jakarta hujan ringan."
         self.assertEqual(clean_tool_calls(raw), "Cuaca Jakarta hujan ringan.")
 
+    def test_clean_dsml_block(self):
+        """Markup DSML DeepSeek (full-width pipe) tidak boleh bocor ke user."""
+        raw = (
+            "Baik, saya proses.\n"
+            "<｜｜DSML｜｜tool_calls>\n"
+            '<｜｜DSML｜｜invoke name="preview_with_codepen">\n'
+            '<｜｜DSML｜｜parameter name="arguments" string="true">{"title":"X"}</｜｜DSML｜｜parameter>\n'
+            "</｜｜DSML｜｜invoke>\n"
+            "</｜｜DSML｜｜tool_calls>"
+        )
+        self.assertEqual(clean_tool_call_text(raw), "Baik, saya proses.")
+
+    def test_clean_dsml_ascii_variant(self):
+        raw = "<|DSML|tool_calls>halo</|DSML|tool_calls>"
+        self.assertEqual(clean_tool_call_text(raw), "")
+
+    def test_clean_tool_calls_dsml(self):
+        raw = "Oke, segera diproses.\n<｜｜DSML｜｜tool_calls>{\"x\":1}"
+        self.assertEqual(clean_tool_calls(raw), "Oke, segera diproses.")
+
     def test_empty_or_none_input(self):
         self.assertEqual(clean_tool_call_text(""), "")
         self.assertEqual(clean_tool_call_text(None), "")
