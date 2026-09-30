@@ -76,6 +76,7 @@ def create_application() -> Application:
     application.add_handler(CommandHandler("matikan", handle_matikan))
     application.add_handler(CommandHandler("log", handle_log))
     application.add_handler(CommandHandler("persona", handle_persona))
+    application.add_handler(CommandHandler("models", handle_models))
     application.add_handler(CommandHandler("jurnal", handle_jurnal_command))
     application.add_handler(CommandHandler("set_token", handle_set_token))
     application.add_handler(
@@ -136,6 +137,7 @@ COMMAND_HELP_DETAIL = {
     "matikan": "Nonaktifkan fitur. Format: /matikan <fitur>",
     "log": "Lihat analisis log error Vercel.",
     "persona": "Atur gaya komunikasi. Format: /persona <gaya>",
+    "models": "Pilih model AI manual. Format: /models [info|status|reset|preset]",
     "jurnal": "Simpan catatan jurnal. Format: /jurnal <teks>",
     "set_token": "Simpan token layanan. Format: /set_token <layanan> <token>",
 }
@@ -170,6 +172,7 @@ COMMAND_HELP_TEXT = (
     "/aktifkan <fitur> — aktifkan fitur\n"
     "/matikan <fitur> — nonaktifkan fitur\n"
     "/persona <gaya> — atur gaya komunikasi\n"
+    "/models — pilih model AI manual\n"
     "/log — lihat log error Vercel\n\n"
     "Ketik /help <perintah> untuk detail, misal: /help cuaca\n"
     "Atau cukup ngobrol langsung seperti biasa!"
@@ -209,6 +212,7 @@ MENU_KEYBOARD = InlineKeyboardMarkup([
      InlineKeyboardButton("Kuota", callback_data="cmd:kuota")],
     [InlineKeyboardButton("Persona", callback_data="cmd:persona"),
      InlineKeyboardButton("Fitur", callback_data="cmd:fitur")],
+    [InlineKeyboardButton("Model AI", callback_data="cmd:models")],
 ])
 
 
@@ -238,6 +242,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     if data.startswith("pr:"):
         await _handle_coding_result_callback(query, chat_id, data[3:].strip())
+        return
+
+    # Tombol pilih model AI (command /models)
+    if data.startswith("model:"):
+        await _handle_model_callback(query, chat_id, data[6:].strip())
         return
 
     if not data.startswith("cmd:"):
@@ -270,6 +279,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "Gaya komunikasi yang tersedia:\n"
             + "\n".join(f"• /persona {s}" for s in PERSONA_STYLES)
         )
+    elif cmd == "models":
+        await _do_models(chat_id, query.message)
     elif cmd == "fitur":
         from src.tools import execute_check_feature_health
         await query.message.reply_text(await execute_check_feature_health())
@@ -707,6 +718,161 @@ async def handle_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
     else:
         await update.effective_chat.send_message("Gagal menyimpan gaya persona. Coba lagi nanti.")
+
+
+async def _build_models_view(chat_id: int, info: bool = False):
+    """
+    Menyusun teks + inline keyboard menu /models.
+    Menampilkan status model aktif di atas, tombol Auto & tombol per model.
+    """
+    from src.config import MODEL_CATALOG, get_model_label
+    from src.kv import get_model_preference_meta
+
+    meta = await get_model_preference_meta(chat_id)
+    current = meta.get("model") or "auto"
+    current_label = get_model_label(current)
+
+    lines = ["🤖 Pilih Model AI", "", f"Status saat ini: {current_label}"]
+    if current == "auto":
+        lines.append("Rotasi otomatis: Groq ➜ Gemini ➜ OpenRouter ➜ DeepInfra")
+    elif meta.get("updated"):
+        lines.append(f"Diganti: {meta['updated']} WIB")
+    lines.append("")
+
+    rows = [[InlineKeyboardButton("🔄 Auto (Recommended)", callback_data="model:auto")]]
+
+    for category, group in MODEL_CATALOG.items():
+        lines.append(f"━━━ {group.get('label', category)} ━━━")
+        if info and group.get("note"):
+            lines.append(group["note"])
+        row = []
+        for entry in group.get("models", []):
+            mark = " ✅" if entry.get("key") == current else ""
+            desc = f" — {entry['desc']}" if entry.get("desc") else ""
+            price = f" ({entry['price']})" if info and entry.get("price") else ""
+            lines.append(f"{entry.get('emoji', '')} {entry['label']}{desc}{price}{mark}".strip())
+            row.append(InlineKeyboardButton(
+                f"{entry.get('emoji', '')} {entry['label']}",
+                callback_data=f"model:{entry['key']}",
+            ))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        lines.append("")
+
+    lines.append("Ketik /models info untuk detail harga & kelebihan.")
+    lines.append("Perintah lain: /models status · /models reset · /models preset <ringan|pintar|coding|gratis>")
+    return "\n".join(lines).strip(), InlineKeyboardMarkup(rows)
+
+
+async def _do_models(chat_id: int, destination, info: bool = False) -> None:
+    """Tampilkan menu pilih model AI (dipakai command /models & tombol menu)."""
+    text, keyboard = await _build_models_view(chat_id, info=info)
+    await destination.send_message(text, reply_markup=keyboard)
+
+
+async def handle_models(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /models — pilih model AI manual (tanpa lewat AI)."""
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    args = [a.strip().lower() for a in (context.args or []) if a.strip()]
+    sub = args[0] if args else ""
+
+    from src.config import MODEL_PRESETS, get_model_entry, get_model_label
+    from src.kv import log_model_change, set_model_preference
+
+    if sub == "reset":
+        await set_model_preference(chat_id, "auto")
+        await log_model_change(chat_id, "reset_auto", "auto", "command")
+        await update.effective_chat.send_message(
+            "✅ Model diubah ke: AUTO\nRotasi otomatis aktif kembali."
+        )
+        return
+
+    if sub == "status":
+        from src.kv import get_model_preference_meta
+        from src.config import MODEL_CATALOG
+
+        meta = await get_model_preference_meta(chat_id)
+        model_key = meta.get("model") or "auto"
+        if model_key == "auto":
+            await update.effective_chat.send_message(
+                "🤖 Model AI aktif: AUTO\n"
+                "Rotasi otomatis: Groq ➜ Gemini ➜ OpenRouter ➜ DeepInfra\n\n"
+                "Ketik /models untuk pilih model manual."
+            )
+            return
+        entry = get_model_entry(model_key)
+        category = MODEL_CATALOG.get(entry.get("provider", ""), {}).get("label", entry.get("provider", "-"))
+        lines = [
+            f"🤖 Model AI aktif: {get_model_label(model_key)}",
+            f"Kategori: {category}",
+        ]
+        if entry.get("price"):
+            lines.append(f"Harga: {entry['price']}")
+        if entry.get("desc"):
+            lines.append(f"Cocok untuk: {entry['desc']}")
+        if meta.get("updated"):
+            lines.append(f"Diganti: {meta['updated']} WIB")
+        lines.append("")
+        lines.append("Ketik /models untuk ganti model.")
+        await update.effective_chat.send_message("\n".join(lines))
+        return
+
+    if sub == "preset":
+        name = args[1] if len(args) > 1 else ""
+        if name not in MODEL_PRESETS:
+            await update.effective_chat.send_message(
+                "Preset tersedia: " + ", ".join(MODEL_PRESETS)
+            )
+            return
+        key = MODEL_PRESETS[name]
+        await set_model_preference(chat_id, key)
+        await log_model_change(chat_id, "preset", key, name)
+        await update.effective_chat.send_message(
+            f"✅ Preset '{name}' aktif: {get_model_label(key)}"
+        )
+        return
+
+    await _do_models(chat_id, update.effective_chat, info=(sub == "info"))
+
+
+async def _handle_model_callback(query, chat_id: int, model_key: str) -> None:
+    """Menangani tombol pilih model AI dari menu /models."""
+    from src.config import get_model_label, list_manual_models
+    from src.kv import log_model_change, set_model_preference
+
+    if model_key != "auto" and model_key not in list_manual_models():
+        await query.message.edit_text("Model tidak dikenal. Ketik /models untuk membuka menu.")
+        return
+
+    await set_model_preference(chat_id, model_key)
+    await log_model_change(
+        chat_id,
+        "set_manual" if model_key != "auto" else "reset_auto",
+        model_key,
+        "tombol",
+    )
+    label = get_model_label(model_key)
+    if model_key == "auto":
+        text = (
+            "✅ Model diubah ke: AUTO\n"
+            "Rotasi otomatis aktif kembali.\n\n"
+            "Ketik /models untuk buka menu lagi."
+        )
+    else:
+        text = (
+            f"✅ Model diubah ke: {label}\n\n"
+            f"Semua task akan memakai {label} sampai kuota habis atau sampai kamu ganti.\n"
+            "Ketik /models untuk ganti."
+        )
+    try:
+        await query.message.edit_text(text)
+    except Exception:
+        await query.message.reply_text(text)
 
 
 async def handle_set_token(

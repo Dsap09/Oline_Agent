@@ -1,7 +1,8 @@
 """
-DeepInfra API client untuk Oline bot.
-Menggunakan DeepSeek V4 Flash via DeepInfra (OpenAI-compatible API)
-untuk intent preview & deploy yang membutuhkan kualitas generasi tinggi.
+OpenCode Go API client untuk Oline bot.
+Menggunakan endpoint OpenAI-compatible OpenCode Zen Go
+(https://opencode.ai/zen/go/v1) dengan dukungan function calling.
+Dipakai untuk model pilihan manual user via command /models.
 """
 
 import asyncio
@@ -14,48 +15,48 @@ from src.utils import clean_tool_calls
 
 logger = logging.getLogger(__name__)
 
-DEEPINFRA_BASE_URL = "https://api.deepinfra.com/v1/openai"
+OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+OPENCODE_GO_DEFAULT_MODEL = "deepseek-v4-flash"
 
-# Batas waktu per panggilan DeepInfra. Generasi landing page lambat, jadi diberi
-# ruang cukup; tetap dibatasi agar fallback chain tidak menggantung berlebihan.
-DEEPINFRA_TIMEOUT = 150.0
+# Batas waktu per panggilan. Landing page butuh ruang lebih; caller (handlers)
+# bisa menimpa lewat parameter timeout sesuai jalur.
+OPENCODE_GO_TIMEOUT = 150.0
 
 
-def _get_deepinfra_client():
-    """Mengembalikan instance OpenAI client yang dikonfigurasi untuk DeepInfra."""
-    api_key = os.environ.get("DEEPINFRA_API_KEY", "").strip()
+def _get_opencode_go_client():
+    """Mengembalikan instance OpenAI client yang dikonfigurasi untuk OpenCode Go."""
+    api_key = os.environ.get("OPENCODE_GO_API_KEY", "").strip()
     if not api_key:
         raise ValueError(
-            "DEEPINFRA_API_KEY environment variable is not set. "
-            "Cannot initialize DeepInfra client."
+            "OPENCODE_GO_API_KEY environment variable is not set. "
+            "Cannot initialize OpenCode Go client."
         )
     from openai import OpenAI
     return OpenAI(
         api_key=api_key,
-        base_url=DEEPINFRA_BASE_URL,
+        base_url=OPENCODE_GO_BASE_URL,
     )
 
 
-async def chat_deepinfra(
+async def chat_opencode_go(
     system_prompt: str,
     history: list[dict[str, Any]],
     user_message: str,
-    tool_declarations: list[dict],
+    tool_declarations: Optional[list[dict]] = None,
     chat_id: int = 0,
-    model_name: Optional[str] = None,
+    model: Optional[str] = None,
     timeout: Optional[float] = None,
 ) -> str:
     """
-    Memanggil model DeepInfra dengan dukungan function calling.
-    Menggunakan format OpenAI-compatible.
+    Memanggil model OpenCode Go dengan dukungan function calling & riwayat percakapan.
 
     Args:
         system_prompt: System prompt lengkap.
         history: Riwayat percakapan dari KV (format [{role, text}, ...]).
         user_message: Pesan pengguna saat ini.
-        tool_declarations: Deklarasi tools format Gemini/dict (akan dikonversi ke OpenAI format).
+        tool_declarations: Deklarasi tools format Gemini/dict (dikonversi ke OpenAI).
         chat_id: ID chat Telegram untuk inject ke tool executor.
-        model_name: ID model DeepInfra (default dari env DEEPINFRA_MODEL).
+        model: ID model OpenCode Go (default deepseek-v4-flash).
         timeout: Batas waktu per panggilan API (detik).
 
     Returns:
@@ -63,12 +64,12 @@ async def chat_deepinfra(
     """
     from src.tools import convert_tools_to_openai_format, execute_tool
 
-    client = _get_deepinfra_client()
+    client = _get_opencode_go_client()
+    model_name = (model or OPENCODE_GO_DEFAULT_MODEL).strip()
+    call_timeout = timeout or OPENCODE_GO_TIMEOUT
 
-    # Build messages array
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
-    # Format history (dibatasi 10 pesan terakhir)
     if history:
         for h in history[-10:]:
             role = h.get("role", "user")
@@ -79,53 +80,41 @@ async def chat_deepinfra(
 
     messages.append({"role": "user", "content": user_message})
 
-    # Konversi tools ke format OpenAI
     openai_tools = convert_tools_to_openai_format(tool_declarations) if tool_declarations else []
 
-    resolved_model = (model_name or os.environ.get("DEEPINFRA_MODEL", "deepseek-ai/DeepSeek-V4-Flash-0731")).strip()
-    call_timeout = timeout or DEEPINFRA_TIMEOUT
-
-    # Konfigurasi request
     kwargs: dict[str, Any] = {
-        "model": resolved_model,
+        "model": model_name,
         "messages": messages,
-        "temperature": 0.9,
+        "temperature": 0.7,
         "max_tokens": 4096,
     }
     if openai_tools:
         kwargs["tools"] = openai_tools
         kwargs["tool_choice"] = "auto"
 
-    # Panggil pertama (dijalankan di thread terpisah agar tidak blocking)
-    # dengan batas waktu agar fallback chain tidak menggantung terlalu lama.
     response = await asyncio.wait_for(
         asyncio.to_thread(client.chat.completions.create, **kwargs),
         timeout=call_timeout,
     )
     response_message = response.choices[0].message
 
-    # Token tracking
     total_tokens = 0
     if hasattr(response, "usage") and response.usage:
         total_tokens += getattr(response.usage, "total_tokens", 0)
 
-    # Function calling loop (maks 3 iterasi)
     max_iterations = 3
     iteration = 0
 
-    # Deteksi intent landing: jika tool preview_with_codepen tersedia, model WAJIB
-    # memanggilnya agar menghasilkan link preview sungguhan (bukan sekadar teks janji).
     is_landing = any(
         (t.get("function", {}) or {}).get("name") == "preview_with_codepen"
         for t in openai_tools
     )
     preview_called = False
 
-    # Base kwargs untuk follow-up (dipakai di loop & enforcement preview).
     follow_kwargs: dict[str, Any] = {
-        "model": resolved_model,
+        "model": model_name,
         "messages": messages,
-        "temperature": 0.9,
+        "temperature": 0.7,
         "max_tokens": 4096,
     }
 
@@ -136,7 +125,6 @@ async def chat_deepinfra(
         if not tool_calls:
             break
 
-        # Append assistant message with tool calls
         assistant_msg: dict[str, Any] = {
             "role": "assistant",
             "content": response_message.content or "",
@@ -159,7 +147,6 @@ async def chat_deepinfra(
 
         messages.append(assistant_msg)
 
-        # Execute tools dan append results
         for tc in tool_calls:
             tc_id = getattr(tc, "id", "")
             func_obj = getattr(tc, "function", None)
@@ -170,7 +157,6 @@ async def chat_deepinfra(
                 try:
                     func_args = json.loads(func_args_str) if func_args_str else {}
                 except json.JSONDecodeError:
-                    logger.warning("Invalid JSON arguments for tool %s: %s", func_name, func_args_str[:100])
                     func_args = {}
             else:
                 func_args = func_args_str or {}
@@ -178,7 +164,7 @@ async def chat_deepinfra(
             try:
                 tool_result = await execute_tool(func_name, func_args, chat_id=chat_id)
             except Exception as ex:
-                logger.error("Error executing tool %s via DeepInfra: %s", func_name, str(ex))
+                logger.error("Error executing tool %s via OpenCode Go: %s", func_name, str(ex))
                 tool_result = {"error": f"Error executing tool {func_name}: {str(ex)}"}
 
             if func_name == "preview_with_codepen":
@@ -192,24 +178,19 @@ async def chat_deepinfra(
                 "content": tool_content,
             })
 
-        # Panggil ulang untuk mendapatkan respons final dari tool results
         response = await asyncio.wait_for(
             asyncio.to_thread(client.chat.completions.create, **follow_kwargs),
             timeout=call_timeout,
         )
         response_message = response.choices[0].message
-
         if hasattr(response, "usage") and response.usage:
             total_tokens += getattr(response.usage, "total_tokens", 0)
 
-    # Extract final text
     final_text = response_message.content or ""
 
-    # --- Enforcement: task landing belum selesai kalau model tidak memanggil preview_with_codepen.
-    # Paksa satu iterasi dengan instruksi eksplisit agar menghasilkan link preview sungguhan,
-    # bukan sekadar teks yang berjanji membuat preview. ---
+    # Enforcement landing: paksa satu iterasi preview bila tool belum dipanggil.
     if is_landing and not preview_called:
-        logger.warning("DeepInfra tidak memanggil preview_with_codepen; memaksa iterasi preview.")
+        logger.warning("OpenCode Go tidak memanggil preview_with_codepen; memaksa iterasi preview.")
         try:
             messages.append({
                 "role": "user",
@@ -223,7 +204,7 @@ async def chat_deepinfra(
                 ),
             })
             force_kwargs: dict[str, Any] = {
-                "model": resolved_model,
+                "model": model_name,
                 "messages": messages,
                 "temperature": 0.7,
                 "max_tokens": 8192,
@@ -238,7 +219,6 @@ async def chat_deepinfra(
             if hasattr(response, "usage") and response.usage:
                 total_tokens += getattr(response.usage, "total_tokens", 0)
 
-            # Proses tool call dari respons paksaan ini (buat preview + ambil link).
             forced_calls = getattr(response_message, "tool_calls", None)
             if forced_calls:
                 messages.append({
@@ -266,7 +246,7 @@ async def chat_deepinfra(
                     try:
                         tool_result = await execute_tool(func_name, func_args, chat_id=chat_id)
                     except Exception as ex:
-                        logger.error("Error executing tool %s via DeepInfra: %s", func_name, str(ex))
+                        logger.error("Error executing tool %s via OpenCode Go: %s", func_name, str(ex))
                         tool_result = {"error": f"Error executing tool {func_name}: {str(ex)}"}
                     messages.append({
                         "role": "tool",
@@ -274,7 +254,6 @@ async def chat_deepinfra(
                         "content": json.dumps(tool_result, ensure_ascii=False) if not isinstance(tool_result, str) else tool_result,
                     })
 
-                # Follow-up agar model menyampaikan ringkasan + link preview.
                 response = await asyncio.wait_for(
                     asyncio.to_thread(client.chat.completions.create, **follow_kwargs),
                     timeout=call_timeout,
@@ -284,18 +263,18 @@ async def chat_deepinfra(
                 if hasattr(response, "usage") and response.usage:
                     total_tokens += getattr(response.usage, "total_tokens", 0)
         except Exception as e:
-            logger.warning("Enforcement preview gagal: %s", str(e))
+            logger.warning("Enforcement preview OpenCode Go gagal: %s", str(e))
 
     try:
         from src.kv import increment_usage
-        await increment_usage("deepinfra", {"request": 1, "token": total_tokens})
+        await increment_usage("opencode_go", {"request": 1, "token": total_tokens})
     except Exception as kv_err:
-        logger.warning("Failed to increment deepinfra usage: %s", str(kv_err))
+        logger.warning("Failed to increment opencode_go usage: %s", str(kv_err))
 
     if total_tokens > 0:
         logger.info(
-            "DeepInfra (%s) completed. Total tokens: %d",
-            resolved_model, total_tokens,
+            "OpenCode Go (%s) completed. Total tokens: %d",
+            model_name, total_tokens,
         )
 
     return clean_tool_calls(final_text)

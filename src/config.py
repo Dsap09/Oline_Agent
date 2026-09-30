@@ -32,17 +32,11 @@ PROVIDER_LIMITS = {
         "period": "saldo",
         "label": "DeepSeek (Landing Page)",
     },
-    "mistral": {
-        "type": "token",
-        "total": 1_000_000_000,
+    "opencode_go": {
+        "type": "langganan",
+        "total": 0,
         "period": "bulan",
-        "label": "Mistral AI (Tools)",
-    },
-    "cerebras": {
-        "type": "token",
-        "total": 1_000_000,
-        "period": "hari",
-        "label": "Cerebras (Cadangan)",
+        "label": "OpenCode Go (Paket $10/bulan)",
     },
 }
 
@@ -78,9 +72,9 @@ TOKEN_REGISTRY = {
         "test_url": "https://generativelanguage.googleapis.com/v1beta/models?key={key}",
         "headers": lambda key: {},
     },
-    "MISTRAL_API_KEY": {
-        "service": "Mistral",
-        "test_url": "https://api.mistral.ai/v1/models",
+    "OPENCODE_GO_API_KEY": {
+        "service": "OpenCode Go",
+        "test_url": "https://opencode.ai/zen/go/v1/models",
         "headers": lambda key: {"Authorization": f"Bearer {key}"},
     },
     "OPENROUTER_API_KEY": {
@@ -91,11 +85,6 @@ TOKEN_REGISTRY = {
     "DEEPINFRA_API_KEY": {
         "service": "DeepInfra",
         "test_url": "https://api.deepinfra.com/v1/models",
-        "headers": lambda key: {"Authorization": f"Bearer {key}"},
-    },
-    "CEREBRAS_API_KEY": {
-        "service": "Cerebras",
-        "test_url": "https://api.cerebras.ai/v1/models",
         "headers": lambda key: {"Authorization": f"Bearer {key}"},
     },
     "VERCEL_API_TOKEN": {
@@ -175,4 +164,152 @@ def token_key_for_env(env_key: str) -> str:
         "GOOGLE_CALENDAR_REFRESH_TOKEN": "calendar",
     }
     return mapping.get(env_key, env_key.lower())
+
+
+# --- Katalog Model AI Manual (command /models) ---
+# Setiap entri model: key (preferensi tersimpan di KV), model_id (dikirim ke provider),
+# label tampilan, emoji, deskripsi singkat, dan info harga (opsional).
+# PENTING: hanya model yang mendukung function calling (uji via scripts/verify_models.py).
+MODEL_CATALOG = {
+    "opencode_go": {
+        "label": "OpenCode Go",
+        "note": "Kuota paket: $4/5 jam, $10/minggu, $20/bulan.",
+        "models": [
+            {
+                "key": "ocg:deepseek-v4-flash",
+                "model_id": "deepseek-v4-flash",
+                "label": "DeepSeek V4 Flash",
+                "emoji": "💎",
+                "desc": "Coding sehari-hari, termurah & cepat",
+                "price": "Termasuk langganan OpenCode Go",
+                "recommended": True,
+            },
+            {
+                "key": "ocg:deepseek-v4-pro",
+                "model_id": "deepseek-v4-pro",
+                "label": "DeepSeek V4 Pro",
+                "emoji": "🚀",
+                "desc": "Reasoning kompleks",
+                "price": "Termasuk langganan OpenCode Go",
+            },
+            {
+                "key": "ocg:glm-5.2",
+                "model_id": "glm-5.2",
+                "label": "GLM-5.2",
+                "emoji": "🧠",
+                "desc": "Model open frontier, reasoning kuat",
+                "price": "Termasuk langganan OpenCode Go",
+            },
+            {
+                "key": "ocg:kimi-k2.7-code",
+                "model_id": "kimi-k2.7-code",
+                "label": "Kimi K2.7 Code",
+                "emoji": "⚡",
+                "desc": "Coding terspesialisasi",
+                "price": "Termasuk langganan OpenCode Go",
+            },
+            {
+                "key": "ocg:mimo-v2.5",
+                "model_id": "mimo-v2.5",
+                "label": "MiMo-V2.5",
+                "emoji": "🔮",
+                "desc": "General-purpose, serbaguna",
+                "price": "Termasuk langganan OpenCode Go",
+            },
+        ],
+    },
+    "deepinfra": {
+        "label": "DeepInfra",
+        "note": "Pay-as-you-go, dibayar per token.",
+        "models": [
+            {
+                "key": "di:deepseek-ai/DeepSeek-V3.1-Terminus",
+                "model_id": "deepseek-ai/DeepSeek-V3.1-Terminus",
+                "label": "DeepSeek-V3.1-Terminus",
+                "emoji": "💎",
+                "desc": "Function calling, coding, agentic",
+                "price": "$0.27 / $0.95 per 1M token",
+                "recommended": True,
+            },
+            {
+                "key": "di:Qwen/Qwen3-32B",
+                "model_id": "Qwen/Qwen3-32B",
+                "label": "Qwen3-32B",
+                "emoji": "⚡",
+                "desc": "Obrolan cepat & task ringan",
+                "price": "$0.08 / $0.28 per 1M token",
+            },
+            {
+                "key": "di:meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                "model_id": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                "label": "Llama 3.3 70B Turbo",
+                "emoji": "🚀",
+                "desc": "Function calling, umum",
+                "price": "$0.10 / $0.32 per 1M token",
+            },
+        ],
+    },
+}
+
+# Preset cepat untuk /models preset <nama>.
+MODEL_PRESETS = {
+    "ringan": "di:Qwen/Qwen3-32B",
+    "pintar": "ocg:deepseek-v4-pro",
+    "coding": "ocg:kimi-k2.7-code",
+    "gratis": "auto",
+}
+
+# Pemetaan prefix key model ke provider (dipakai saat routing manual).
+MODEL_KEY_PROVIDERS = {
+    "ocg": "opencode_go",
+    "di": "deepinfra",
+}
+
+
+def parse_model_key(key: str) -> tuple:
+    """
+    Memecah key model menjadi (provider, model_id).
+    Contoh: 'ocg:deepseek-v4-flash' -> ('opencode_go', 'deepseek-v4-flash').
+    Returns (None, None) bila key tidak dikenal / bukan model manual.
+    """
+    if not key or key == "auto":
+        return None, None
+    raw = str(key).strip()
+    prefix, _, model_id = raw.partition(":")
+    provider = MODEL_KEY_PROVIDERS.get(prefix)
+    if not provider or not model_id:
+        return None, None
+    return provider, model_id
+
+
+def get_model_entry(key: str) -> dict:
+    """
+    Mengambil entri katalog model berdasarkan key-nya.
+    Returns dict berisi data model + provider & category, atau {} bila tidak ada.
+    """
+    if not key:
+        return {}
+    for category, group in MODEL_CATALOG.items():
+        for entry in group.get("models", []):
+            if entry.get("key") == key:
+                return {**entry, "provider": category}
+    return {}
+
+
+def get_model_label(key: str) -> str:
+    """Label tampilan model untuk notifikasi/pesan; 'AUTO' untuk rotasi otomatis."""
+    if not key or key == "auto":
+        return "AUTO"
+    entry = get_model_entry(key)
+    return entry.get("label") or key
+
+
+def list_manual_models() -> list:
+    """Daftar semua key model manual yang terdaftar di katalog."""
+    return [
+        entry["key"]
+        for group in MODEL_CATALOG.values()
+        for entry in group.get("models", [])
+        if entry.get("key")
+    ]
 

@@ -10,6 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Set token sebelum import src.bot agar create_application bisa dibangun (urutan tes apa pun)
+os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test:token")
+
 from src.bot import detect_intent
 from src.gemini import chat_with_oline
 from src.tools import preview_with_codepen
@@ -22,6 +25,7 @@ class TestDeepInfraRouting(unittest.IsolatedAsyncioTestCase):
         os.environ["DEEPINFRA_MODEL"] = "deepseek-ai/DeepSeek-V4-Flash-0731"
         os.environ["GROQ_API_KEY"] = "mock_groq_key_123"
         os.environ["GEMINI_API_KEY"] = "mock_gemini_key_123"
+        os.environ["OPENROUTER_API_KEY"] = "mock_openrouter_key_123"
 
     def test_detect_intent_preview_deploy_design(self):
         """Tes pendeteksian intent preview, deploy, dan design_reference."""
@@ -30,11 +34,12 @@ class TestDeepInfraRouting(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detect_intent("cari referensi desain website cafe"), "design_reference")
 
     @patch("src.deepinfra.chat_deepinfra", new_callable=AsyncMock)
+    @patch("src.kv.get_model_preference", new_callable=AsyncMock, return_value="auto")
     @patch("src.kv.get_memory", new_callable=AsyncMock)
     @patch("src.kv.get_history", new_callable=AsyncMock)
     @patch("src.kv.save_history", new_callable=AsyncMock)
     async def test_chat_with_oline_deepinfra_routing(
-        self, mock_save_history, mock_get_history, mock_get_memory, mock_chat_deepinfra
+        self, mock_save_history, mock_get_history, mock_get_memory, mock_get_pref, mock_chat_deepinfra
     ):
         """Tes intent preview, deploy, dan design_reference memanggil chat_deepinfra."""
         mock_get_memory.return_value = ""
@@ -60,30 +65,40 @@ class TestDeepInfraRouting(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res_design, "Ini hasil balasan dari DeepSeek V4 Flash!")
         mock_chat_deepinfra.assert_called()
 
-    @patch("src.groq.chat_groq_with_tools", new_callable=AsyncMock)
-    @patch("src.gemini._generate_content_with_fallback", new_callable=AsyncMock)
+    @patch("src.grounding.prepare_grounding", new_callable=AsyncMock)
+    @patch("src.groq.chat_groq", new_callable=AsyncMock)
+    @patch("src.openrouter.chat_openrouter", new_callable=AsyncMock)
+    @patch("src.gemini._gemini_generate_with_tools", new_callable=AsyncMock)
     @patch("src.deepinfra.chat_deepinfra", new_callable=AsyncMock)
-    @patch("src.kv.get_memory", new_callable=AsyncMock)
-    @patch("src.kv.get_history", new_callable=AsyncMock)
-    @patch("src.kv.save_pending_task", new_callable=AsyncMock)
-    async def test_deepinfra_fallback_to_gemini_not_groq(
-        self, mock_save_pending, mock_get_history, mock_get_memory, mock_chat_deepinfra, mock_gemini_gen, mock_groq_slow
+    async def test_landing_fallback_gemini_before_groq(
+        self, mock_chat_deepinfra, mock_gemini_tools, mock_openrouter, mock_groq, mock_ground
     ):
-        """Tes jika DeepInfra gagal, fallback ke Gemini dan TIDAK memanggil Groq untuk intent preview/deploy/design_reference."""
-        mock_get_memory.return_value = ""
-        mock_get_history.return_value = []
-        
-        # DeepInfra raises error
-        mock_chat_deepinfra.side_effect = Exception("DeepInfra 429 Rate Limit")
-        
-        # Gemini raises error
-        mock_gemini_gen.side_effect = Exception("Gemini Quota Exceeded")
+        """
+        Rantai landing baru: DeepInfra gagal -> Gemini dicoba sebelum Groq
+        (Groq hanya cadangan terakhir). Semua gagal -> pesan error generik.
+        """
+        from src.handlers import call_model_with_fallback
 
-        res = await chat_with_oline(chat_id=123, user_message="bikin website landing page", intent="preview")
-        
-        # Groq slow path should NEVER be called
-        mock_groq_slow.assert_not_called()
-        self.assertIn("perintah kamu udah Oline simpan", res)
+        mock_ground.return_value = ("skip", None, None, None)
+        mock_chat_deepinfra.side_effect = Exception("DeepInfra 429 Rate Limit")
+        mock_gemini_tools.side_effect = Exception("Gemini Quota Exceeded")
+        mock_openrouter.side_effect = Exception("OpenRouter limit")
+        mock_groq.return_value = None
+
+        res = await call_model_with_fallback(
+            jalur="landing",
+            system_prompt="sistem",
+            history=[],
+            user_message="bikin website landing page",
+            tools=None,
+            chat_id=123,
+            intent="preview",
+        )
+
+        mock_gemini_tools.assert_awaited()
+        mock_openrouter.assert_awaited()
+        mock_groq.assert_awaited()
+        self.assertIn("Semua model AI sedang error", res)
 
     @patch("src.tools.create_github_preview", new_callable=AsyncMock)
     async def test_preview_with_codepen_github_success(self, mock_gh):

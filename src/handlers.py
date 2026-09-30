@@ -550,6 +550,85 @@ async def process_pending_task(target_chat_id: Optional[int] = None) -> dict[str
 
 
 
+# Penanda error kuota/limit provider AI (dipakai fallback model manual -> auto).
+_QUOTA_ERROR_MARKERS = (
+    "429",
+    "too many requests",
+    "rate limit",
+    "ratelimit",
+    "quota",
+    "insufficient_quota",
+    "insufficient quota",
+    "exceeded",
+    "limit reached",
+    "budget",
+)
+
+
+def _is_quota_error(err: Exception) -> bool:
+    """Mendeteksi error limit kuota / rate limit dari exception provider AI."""
+    status = getattr(err, "status_code", None) or getattr(err, "code", None)
+    try:
+        if int(status) == 429:
+            return True
+    except (TypeError, ValueError):
+        pass
+    text = str(err).lower()
+    return any(marker in text for marker in _QUOTA_ERROR_MARKERS)
+
+
+async def _call_manual_model(
+    model_key: str,
+    jalur: str,
+    system_prompt: str,
+    history: list[dict[str, Any]],
+    user_message: str,
+    tools: Optional[list[dict]],
+    chat_id: int,
+) -> str:
+    """
+    Memanggil SATU model manual pilihan user (tanpa rotasi/fallback otomatis).
+    Raises exception bila provider gagal/limit; pemanggil menangani fallback ke auto.
+    """
+    from src.config import parse_model_key
+
+    provider, model_id = parse_model_key(model_key)
+    if not provider:
+        raise ValueError(f"Preferensi model '{model_key}' tidak dikenal.")
+
+    from src.gemini import _generation_timeout
+    timeout = _generation_timeout(jalur)
+
+    if provider == "opencode_go":
+        from src.opencode_go import chat_opencode_go
+        res = await chat_opencode_go(
+            system_prompt=system_prompt,
+            history=history,
+            user_message=user_message,
+            tool_declarations=tools,
+            chat_id=chat_id,
+            model=model_id,
+            timeout=timeout,
+        )
+    elif provider == "deepinfra":
+        from src.deepinfra import chat_deepinfra
+        res = await chat_deepinfra(
+            system_prompt=system_prompt,
+            history=history,
+            user_message=user_message,
+            tool_declarations=tools,
+            chat_id=chat_id,
+            model_name=model_id,
+            timeout=timeout,
+        )
+    else:
+        raise ValueError(f"Provider '{provider}' tidak mendukung pemilihan manual.")
+
+    if not res or not res.strip():
+        raise RuntimeError(f"Model {model_key} mengembalikan respons kosong.")
+    return res.strip()
+
+
 async def call_model_with_fallback(
     jalur: str,
     system_prompt: str,
@@ -558,24 +637,29 @@ async def call_model_with_fallback(
     tools: Optional[list[dict]] = None,
     chat_id: int = 0,
     intent: Optional[str] = None,
+    model_preference: str = "auto",
 ) -> str:
     """
-    Eksekusi alur pemanggilan model AI dengan urutan fallback optimal per jalur (brief.md):
-    - 'fast' (Chat Ringan): Groq -> Mistral -> Cerebras -> OpenRouter -> Gemini
-    - 'tools' (Tools Ringan): Mistral -> Gemini -> Cerebras -> OpenRouter -> Groq
-    - 'landing' (Landing Page/Deploy): DeepSeek -> Mistral -> Gemini -> Cerebras -> OpenRouter
+    Eksekusi alur pemanggilan model AI dengan urutan fallback optimal per jalur:
+    - 'fast' (Chat Ringan): Groq -> Gemini -> OpenRouter -> DeepInfra
+    - 'tools' (Tools Ringan): Gemini -> OpenRouter -> DeepInfra -> Groq
+    - 'landing' (Landing Page/Deploy): DeepInfra -> Gemini -> OpenRouter -> Groq
+
+    Jika model_preference bukan 'auto' (pilihan manual via /models), task dipaksa
+    memakai model itu tanpa rotasi. Saat model manual kena limit/error, preferensi
+    direset ke 'auto', user dinotifikasi, lalu task lanjut dengan rotasi otomatis.
 
     Sebelum model menjawab, gate grounding memastikan data nyata (dari tool wajib intent)
     tersedia di konteks; jika tidak, Oline jujur menyatakan data tak tersedia / minta info.
     """
     if jalur == "fast":
-        order = ["groq", "mistral", "cerebras", "openrouter", "gemini"]
+        order = ["groq", "gemini", "openrouter", "deepseek"]
     elif jalur == "tools":
-        order = ["mistral", "gemini", "cerebras", "openrouter", "groq"]
+        order = ["gemini", "openrouter", "deepseek", "groq"]
     elif jalur == "landing":
-        order = ["deepseek", "mistral", "gemini", "cerebras", "openrouter"]
+        order = ["deepseek", "gemini", "openrouter", "groq"]
     else:
-        order = ["groq", "mistral", "gemini"]
+        order = ["groq", "gemini", "openrouter"]
 
     # --- Grounding wajib: ambil data nyata sebelum model menjawab (anti-halu) ---
     try:
@@ -596,6 +680,39 @@ async def call_model_with_fallback(
     except Exception as g_err:
         logger.warning("Grounding prepare gagal (lanjut tanpa grounding): %s", str(g_err))
 
+    # --- Model manual pilihan user (command /models): paksa pakai model itu ---
+    pref = (model_preference or "auto").strip()
+    if pref and pref != "auto":
+        from src.config import get_model_label
+        from src.kv import log_model_change, set_model_preference
+
+        try:
+            return await _call_manual_model(
+                model_key=pref,
+                jalur=jalur,
+                system_prompt=system_prompt,
+                history=history,
+                user_message=user_message,
+                tools=tools,
+                chat_id=chat_id,
+            )
+        except Exception as manual_err:
+            reason = "limit" if _is_quota_error(manual_err) else "error"
+            label = get_model_label(pref)
+            logger.warning("Model manual '%s' gagal (%s): %s", pref, reason, str(manual_err))
+            # Kembalikan ke rotasi otomatis + catat audit + notifikasi ke user.
+            await set_model_preference(chat_id, "auto")
+            await log_model_change(chat_id, "fallback_auto", pref, reason)
+            try:
+                await send_telegram_message(
+                    chat_id,
+                    f"⚠️ Model {label} kena {reason}.\n\n"
+                    "Oline balik ke AUTO (rotasi otomatis).\n"
+                    "Ketik /models untuk pilih lagi.",
+                )
+            except Exception as notif_err:
+                logger.warning("Gagal kirim notifikasi fallback model: %s", str(notif_err))
+
     for provider in order:
         try:
             if provider == "groq" and os.environ.get("GROQ_API_KEY", "").strip():
@@ -604,20 +721,6 @@ async def call_model_with_fallback(
                     res = await chat_groq_with_tools(system_prompt=system_prompt, history=history, user_message=user_message, tools=tools, chat_id=chat_id)
                 else:
                     res = await chat_groq(system_prompt, history, user_message, chat_id=chat_id)
-                if res and res.strip():
-                    return res.strip()
-
-            elif provider == "mistral" and os.environ.get("MISTRAL_API_KEY", "").strip():
-                logger.info("Mencoba Mistral... (jalur: %s)", jalur)
-                from src.mistral import chat_mistral
-                res = await chat_mistral(system_prompt=system_prompt, history=history, user_message=user_message, tool_declarations=tools, chat_id=chat_id)
-                if res and res.strip():
-                    return res.strip()
-
-            elif provider == "cerebras" and os.environ.get("CEREBRAS_API_KEY", "").strip():
-                logger.info("Mencoba Cerebras... (jalur: %s)", jalur)
-                from src.cerebras import chat_cerebras
-                res = await chat_cerebras(system_prompt=system_prompt, history=history, user_message=user_message, tool_declarations=tools, chat_id=chat_id)
                 if res and res.strip():
                     return res.strip()
 

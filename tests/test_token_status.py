@@ -27,7 +27,7 @@ class TestTokenRegistry(unittest.TestCase):
         for key in [
             "GROQ_API_KEY",
             "GEMINI_API_KEY",
-            "MISTRAL_API_KEY",
+            "OPENCODE_GO_API_KEY",
             "OPENROUTER_API_KEY",
             "VERCEL_API_TOKEN",
             "NOTION_API_KEY",
@@ -89,7 +89,7 @@ class TestCheckTokenStatus(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("✅ Groq: valid", result)
         self.assertIn("✅ Gemini: valid", result)
-        self.assertIn("⚠️ Mistral: tidak dikonfigurasi", result)
+        self.assertIn("⚠️ OpenCode Go: tidak dikonfigurasi", result)
         # Tidak boleh membocorkan isi token
         self.assertNotIn("sk-test-groq", result)
         self.assertNotIn("sk-test-gemini", result)
@@ -155,7 +155,7 @@ class TestCheckTokenStatusReport(unittest.IsolatedAsyncioTestCase):
         by_service = {r["service"]: r for r in report}
         self.assertEqual(by_service["Groq"]["status"], "valid")
         self.assertIn("env_key", by_service["Groq"])
-        self.assertEqual(by_service["Mistral"]["status"], "unconfigured")
+        self.assertEqual(by_service["OpenCode Go"]["status"], "unconfigured")
         # Tidak membocorkan token
         for r in report:
             self.assertNotIn("sk-groq", str(r))

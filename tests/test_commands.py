@@ -39,7 +39,7 @@ class TestCommandHelp(unittest.TestCase):
         for cmd in ("start", "help", "menu", "clear", "batal", "status",
                     "cuaca", "saham", "cari", "gambar", "kuota", "jurnal",
                     "list", "preview", "landing", "deploy", "tasks",
-                    "fitur", "aktifkan", "matikan", "log", "persona"):
+                    "fitur", "aktifkan", "matikan", "log", "persona", "models"):
             self.assertIn(cmd, COMMAND_HELP_DETAIL)
 
 
@@ -129,7 +129,7 @@ class TestApplicationRegistration(unittest.TestCase):
         for cmd in ("start", "help", "menu", "clear", "batal", "status",
                     "cuaca", "saham", "cari", "gambar", "kuota", "jurnal",
                     "list", "preview", "landing", "deploy", "tasks",
-                    "fitur", "aktifkan", "matikan", "log", "persona"):
+                    "fitur", "aktifkan", "matikan", "log", "persona", "models"):
             self.assertIn(cmd, registered)
 
 

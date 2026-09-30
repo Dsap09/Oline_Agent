@@ -37,6 +37,8 @@ CLARIFY_PREFIX = "clarify"
 TOKEN_PREFIX = "token"
 PERSONA_PREFIX = "persona"
 PLAN_PREFIX = "coding_plan"
+MODEL_PREF_PREFIX = "model_preference"
+MODEL_LOG_PREFIX = "model_log"
 
 
 
@@ -118,6 +120,88 @@ async def save_memory(chat_id: int, memory_summary: str) -> bool:
     key = f"{MEMORY_PREFIX}:{chat_id}"
     result = await _kv_request(["SET", key, memory_summary, "EX", "2592000"])
     return result is not None
+
+
+# --- Preferensi Model AI Manual (command /models) ---
+# Nilai disimpan TANPA TTL (permanen sampai user ganti) sesuai brief.
+
+async def get_model_preference(chat_id: int) -> str:
+    """Mengambil preferensi model manual user. Default 'auto' (rotasi otomatis)."""
+    meta = await get_model_preference_meta(chat_id)
+    return meta.get("model") or "auto"
+
+
+async def get_model_preference_meta(chat_id: int) -> dict:
+    """Mengambil detail preferensi model (model + waktu update terakhir)."""
+    key = f"{MODEL_PREF_PREFIX}:{chat_id}"
+    result = await _kv_request(["GET", key])
+    if result and result.get("result"):
+        try:
+            data = result["result"]
+            if isinstance(data, str):
+                data = json.loads(data)
+            if isinstance(data, dict):
+                return {
+                    "model": str(data.get("model", "auto")),
+                    "updated": str(data.get("updated", "")),
+                }
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning("Error parsing model preference from KV: %s", str(e))
+    return {"model": "auto", "updated": ""}
+
+
+async def set_model_preference(chat_id: int, model_key: str) -> bool:
+    """Menyimpan preferensi model manual user ke KV (tanpa TTL)."""
+    key = f"{MODEL_PREF_PREFIX}:{chat_id}"
+    payload = json.dumps({
+        "model": (model_key or "auto").strip(),
+        "updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }, ensure_ascii=False)
+    result = await _kv_request(["SET", key, payload])
+    return result is not None
+
+
+async def clear_model_preference(chat_id: int) -> bool:
+    """Menghapus preferensi model user (kembali ke default auto)."""
+    key = f"{MODEL_PREF_PREFIX}:{chat_id}"
+    result = await _kv_request(["DEL", key])
+    return result is not None
+
+
+async def log_model_change(chat_id: int, action: str, model_key: str, reason: str = "") -> bool:
+    """
+    Audit log perubahan model ke KV (key: model_log:<chat_id>).
+    TTL 7 hari, maksimal 50 entri terakhir.
+    """
+    key = f"{MODEL_LOG_PREFIX}:{chat_id}"
+    payload = json.dumps({
+        "waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "action": action,
+        "model": model_key,
+        "reason": str(reason)[:200],
+    }, ensure_ascii=False)
+    res = await _kv_pipeline([
+        ["RPUSH", key, payload],
+        ["LTRIM", key, "-50", "-1"],
+        ["EXPIRE", key, "604800"],
+    ])
+    return res is not None
+
+
+async def get_model_audit_log(chat_id: int, limit: int = 20) -> list[dict]:
+    """Mengambil audit log perubahan model terbaru (maks `limit` entri)."""
+    key = f"{MODEL_LOG_PREFIX}:{chat_id}"
+    res = await _kv_request(["LRANGE", key, str(-abs(limit)), "-1"])
+    entries: list[dict] = []
+    if res and isinstance(res.get("result"), list):
+        for raw in res["result"]:
+            try:
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(data, dict):
+                    entries.append(data)
+            except (json.JSONDecodeError, TypeError):
+                continue
+    return entries
 
 
 # --- Conversation History Functions ---
@@ -1052,11 +1136,11 @@ async def increment_usage(provider: str, usage: dict) -> bool:
 async def get_all_ai_usage() -> dict[str, dict[str, int]]:
     """
     Mengambil data pemakaian AI hari ini (WIB) untuk semua provider:
-    openrouter, groq, gemini, deepinfra, mistral, cerebras.
+    openrouter, groq, gemini, deepinfra, opencode_go.
     """
     wib = timezone(timedelta(hours=7))
     today = datetime.now(wib).strftime("%Y-%m-%d")
-    providers = ["openrouter", "groq", "gemini", "deepinfra", "mistral", "cerebras"]
+    providers = ["openrouter", "groq", "gemini", "deepinfra", "opencode_go"]
 
     result = {}
     for provider in providers:

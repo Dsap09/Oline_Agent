@@ -618,6 +618,8 @@ async def chat_with_oline(
     Main function untuk chat dengan Oline.
     Mengelola alur: intent tool filter, memori, riwayat, function calling, dan timeout fast/slow path.
     Intent preview/deploy diarahkan ke DeepInfra (DeepSeek V4 Flash) dengan fallback ke Gemini.
+    Preferensi model manual user (command /models) dipaksa sebagai satu-satunya model;
+    bila model manual limit/error, otomatis kembali ke rotasi 'auto'.
     """
     try:
         # Cek apakah pengguna meminta ringkasan percakapan harian
@@ -653,6 +655,15 @@ async def chat_with_oline(
 
         try:
             from src.handlers import call_model_with_fallback
+
+            # Preferensi model manual user (command /models); default 'auto' = rotasi otomatis.
+            try:
+                from src.kv import get_model_preference
+                model_preference = await get_model_preference(chat_id)
+            except Exception as pref_err:
+                logger.warning("Gagal baca preferensi model: %s", str(pref_err))
+                model_preference = "auto"
+
             fallback_response = await call_model_with_fallback(
                 jalur=jalur,
                 system_prompt=system_prompt,
@@ -661,6 +672,7 @@ async def chat_with_oline(
                 tools=tool_declarations,
                 chat_id=chat_id,
                 intent=intent,
+                model_preference=model_preference,
             )
             if fallback_response and "Semua model AI sedang error" not in fallback_response:
                 fallback_response = clean_tool_calls(fallback_response)

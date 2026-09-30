@@ -101,7 +101,7 @@ check_token_status_tool = {
     "name": "check_token_status",
     "description": (
         "Memeriksa status semua token API yang terhubung dengan Oline "
-        "(Groq, Gemini, Mistral, OpenRouter, DeepInfra, Cerebras, Vercel, Notion, GitHub, Google Drive, Google Calendar, ERINE). "
+        "(Groq, Gemini, OpenCode Go, OpenRouter, DeepInfra, Vercel, Notion, GitHub, Google Drive, Google Calendar, ERINE). "
         "Gunakan saat pengguna meminta mengecek token, API key, kredensial, atau status validitas token."
     ),
     "parameters": {
@@ -268,7 +268,7 @@ TOOL_DECLARATIONS = [
     {
         "name": "check_ai_quota",
         "description": (
-            "Mengecek laporan kuota 6 AI provider (OpenRouter, Groq, Gemini, DeepInfra, Mistral, Cerebras) terpakai dan sisa kuota hari ini. "
+            "Mengecek laporan kuota 5 AI provider (OpenRouter, Groq, Gemini, DeepInfra, OpenCode Go) terpakai dan sisa kuota hari ini. "
             "WAJIB digunakan saat pengguna bertanya tentang kuota, sisa token, pemakaian AI, status AI, atau 'cek kuota'."
         ),
         "parameters": {
@@ -1253,6 +1253,8 @@ def hitung_sisa(provider: str, terpakai: Any) -> str:
             val = float(terpakai) if terpakai else 0.0
             sisa_saldo = max(0.0, float(total_limit) - val)
             return f"${sisa_saldo:.2f}"
+        elif limit_type == "langganan":
+            return "sesuai paket langganan"
         else:
             val = int(terpakai) if terpakai else 0
             sisa = max(0, int(total_limit) - val)
@@ -1293,6 +1295,9 @@ def format_quota_report(usage_data: dict) -> str:
         elif limit_type == "saldo":
             terpakai_val = data.get("saldo_terpakai", 0.0) if isinstance(data, dict) else 0.0
             terpakai_str = f"${terpakai_val:.2f}"
+        elif limit_type == "langganan":
+            terpakai_val = token
+            terpakai_str = f"{token:,} token ({req} request)"
         else:
             terpakai_val = req
             terpakai_str = f"{req} request"
@@ -1300,6 +1305,8 @@ def format_quota_report(usage_data: dict) -> str:
         sisa_str = hitung_sisa(provider, terpakai_val)
         if limit_type == "saldo":
             status = "❌ Habis" if sisa_str in ("$0.00", "$0.0", "$0") else "✅ Aman"
+        elif limit_type == "langganan":
+            status = "✅ Sesuai paket"
         else:
             status = "❌ Habis" if sisa_str.startswith("0 ") else "✅ Aman"
 
