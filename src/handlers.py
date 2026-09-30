@@ -590,11 +590,14 @@ async def _call_manual_model(
     Memanggil SATU model manual pilihan user (tanpa rotasi/fallback otomatis).
     Raises exception bila provider gagal/limit; pemanggil menangani fallback ke auto.
     """
-    from src.config import parse_model_key
+    from src.config import get_model_entry, parse_model_key
 
     provider, model_id = parse_model_key(model_key)
     if not provider:
         raise ValueError(f"Preferensi model '{model_key}' tidak dikenal.")
+
+    entry = get_model_entry(model_key)
+    temperature = entry.get("temperature", 0.7)
 
     from src.gemini import _generation_timeout
     timeout = _generation_timeout(jalur)
@@ -609,6 +612,7 @@ async def _call_manual_model(
             chat_id=chat_id,
             model=model_id,
             timeout=timeout,
+            temperature=temperature,
         )
     elif provider == "deepinfra":
         from src.deepinfra import chat_deepinfra

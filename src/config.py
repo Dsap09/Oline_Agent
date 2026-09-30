@@ -207,6 +207,7 @@ MODEL_CATALOG = {
                 "emoji": "⚡",
                 "desc": "Coding terspesialisasi",
                 "price": "Termasuk langganan OpenCode Go",
+                "temperature": 1.0,
             },
             {
                 "key": "ocg:mimo-v2.5",

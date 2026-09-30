@@ -7,7 +7,7 @@ import json
 import os
 import sys
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -80,6 +80,11 @@ class TestModelCatalog(unittest.TestCase):
         for key in list_manual_models():
             self.assertLess(len(f"model:{key}".encode("utf-8")), 64)
 
+    def test_kimi_requires_temperature_1(self):
+        """Kimi K2.7 Code hanya menerima temperature=1 di OpenCode Go."""
+        entry = get_model_entry("ocg:kimi-k2.7-code")
+        self.assertEqual(entry.get("temperature"), 1.0)
+
     def test_all_models_have_price_and_desc(self):
         for group in MODEL_CATALOG.values():
             for entry in group.get("models", []):
@@ -135,6 +140,65 @@ class TestModelPreferenceKV(unittest.IsolatedAsyncioTestCase):
         logs = await get_model_audit_log(999)
         self.assertEqual(len(logs), 1)
         self.assertEqual(logs[0]["action"], "set_manual")
+
+
+class TestOpenCodeGoClientHeaders(unittest.TestCase):
+    """OpenCode Go mewajibkan User-Agent custom + x-opencode-session (400 MissingSessionID)."""
+
+    @patch("openai.OpenAI")
+    @patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "oc_sk_test"})
+    def test_client_sends_session_and_custom_user_agent(self, mock_openai):
+        from src.opencode_go import _get_opencode_go_client
+
+        _get_opencode_go_client(chat_id=4242)
+        headers = mock_openai.call_args.kwargs["default_headers"]
+        self.assertEqual(headers["x-opencode-session"], "oline-4242")
+        self.assertIn("Oline", headers["User-Agent"])
+
+    @patch("openai.OpenAI")
+    @patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "oc_sk_test"})
+    def test_client_system_session_without_chat_id(self, mock_openai):
+        from src.opencode_go import _get_opencode_go_client
+
+        _get_opencode_go_client(0)
+        headers = mock_openai.call_args.kwargs["default_headers"]
+        self.assertEqual(headers["x-opencode-session"], "oline-system")
+
+    @patch.dict(os.environ, {"OPENCODE_GO_API_KEY": ""})
+    def test_missing_key_raises(self):
+        from src.opencode_go import _get_opencode_go_client
+
+        with self.assertRaises(ValueError):
+            _get_opencode_go_client(1)
+
+
+class TestOpenCodeGoTemperatureRetry(unittest.IsolatedAsyncioTestCase):
+    """Retry otomatis ke temperature=1 untuk model yang menolak nilai lain."""
+
+    async def test_retries_with_temperature_1(self):
+        from src.opencode_go import _create_completion
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = [
+            Exception("invalid temperature: only 1 is allowed for this model"),
+            "ok-response",
+        ]
+
+        res = await _create_completion(client, 5.0, model="kimi-k2.7-code", temperature=0.7)
+
+        self.assertEqual(res, "ok-response")
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        self.assertEqual(client.chat.completions.create.call_args.kwargs["temperature"], 1.0)
+
+    async def test_non_temperature_error_not_retried(self):
+        from src.opencode_go import _create_completion
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = Exception("429 rate limit exceeded")
+
+        with self.assertRaises(Exception):
+            await _create_completion(client, 5.0, model="deepseek-v4-flash", temperature=0.7)
+        self.assertEqual(client.chat.completions.create.call_count, 1)
 
 
 class TestQuotaErrorDetection(unittest.TestCase):
@@ -206,6 +270,26 @@ class TestManualModelRouting(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(res, "halo dari deepinfra manual")
         self.assertEqual(mock_di.await_args.kwargs["model_name"], "Qwen/Qwen3-32B")
+
+    @patch("src.grounding.prepare_grounding", new_callable=AsyncMock)
+    @patch("src.opencode_go.chat_opencode_go", new_callable=AsyncMock)
+    async def test_kimi_passes_temperature_1(self, mock_ocg, mock_ground):
+        """Kimi K2.7 Code dikirim dengan temperature=1 (dari katalog)."""
+        mock_ground.return_value = ("skip", None, None, None)
+        mock_ocg.return_value = "ok"
+
+        res = await call_model_with_fallback(
+            jalur="tools",
+            system_prompt="sistem",
+            history=[],
+            user_message="halo",
+            tools=None,
+            chat_id=3,
+            model_preference="ocg:kimi-k2.7-code",
+        )
+
+        self.assertEqual(res, "ok")
+        self.assertEqual(mock_ocg.await_args.kwargs["temperature"], 1.0)
 
     @patch("src.handlers.send_telegram_message", new_callable=AsyncMock)
     @patch("src.kv.log_model_change", new_callable=AsyncMock)

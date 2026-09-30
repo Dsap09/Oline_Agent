@@ -15,6 +15,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Console Windows (cp1252) tidak bisa mencetak karakter box-drawing/emoji.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -57,11 +63,25 @@ def _client_for(provider: str):
     api_key = os.environ.get(env_key, "").strip()
     if not api_key:
         return None, f"{env_key} belum diset"
+
+    if provider == "opencode_go":
+        # OpenCode Go mewajibkan User-Agent custom + header x-opencode-session.
+        return OpenAI(
+            api_key=api_key,
+            base_url=PROVIDER_BASE_URLS[provider],
+            default_headers={
+                "User-Agent": "Oline-Agent/1.0",
+                "x-opencode-session": "oline-verify",
+            },
+        ), ""
+
     return OpenAI(api_key=api_key, base_url=PROVIDER_BASE_URLS[provider]), ""
 
 
-def _verify_one(client, model_id: str):
+def _verify_one(client, entry: dict):
     """Uji satu model memanggil tool. Returns (ok, detail)."""
+    model_id = entry["model_id"]
+    temperature = entry.get("temperature", 0.0)
     messages = [{"role": "user", "content": PROMPT}]
     tools = [DUMMY_TOOL]
     forced_choice = {"type": "function", "function": {"name": "cek_cuaca"}}
@@ -72,7 +92,7 @@ def _verify_one(client, model_id: str):
             messages=messages,
             tools=tools,
             tool_choice=forced_choice,
-            temperature=0.0,
+            temperature=temperature,
             max_tokens=200,
             timeout=60.0,
         )
@@ -84,7 +104,7 @@ def _verify_one(client, model_id: str):
                 messages=messages,
                 tools=tools,
                 tool_choice="auto",
-                temperature=0.0,
+                temperature=temperature,
                 max_tokens=200,
                 timeout=60.0,
             )
@@ -129,7 +149,7 @@ def main() -> int:
             total += 1
             key = entry["key"]
             try:
-                ok, detail = _verify_one(client, entry["model_id"])
+                ok, detail = _verify_one(client, entry)
             except Exception as e:
                 ok, detail = False, f"error tak terduga: {str(e)[:160]}"
             status = "PASS" if ok else "FAIL"

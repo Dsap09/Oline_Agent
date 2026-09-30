@@ -23,8 +23,15 @@ OPENCODE_GO_DEFAULT_MODEL = "deepseek-v4-flash"
 OPENCODE_GO_TIMEOUT = 150.0
 
 
-def _get_opencode_go_client():
-    """Mengembalikan instance OpenAI client yang dikonfigurasi untuk OpenCode Go."""
+def _get_opencode_go_client(chat_id: int = 0):
+    """
+    Mengembalikan instance OpenAI client yang dikonfigurasi untuk OpenCode Go.
+
+    OpenCode Go MEWAJIBKAN:
+    - User-Agent custom (bukan nama SDK/HTTP library generik).
+    - Header `x-opencode-session` berisi ID sesi stabil per percakapan
+      (dipakai untuk routing & prompt caching). Tanpa ini, respons 400 MissingSessionID.
+    """
     api_key = os.environ.get("OPENCODE_GO_API_KEY", "").strip()
     if not api_key:
         raise ValueError(
@@ -32,10 +39,36 @@ def _get_opencode_go_client():
             "Cannot initialize OpenCode Go client."
         )
     from openai import OpenAI
+    session_id = f"oline-{chat_id}" if chat_id else "oline-system"
     return OpenAI(
         api_key=api_key,
         base_url=OPENCODE_GO_BASE_URL,
+        default_headers={
+            "User-Agent": "Oline-Agent/1.0",
+            "x-opencode-session": session_id,
+        },
     )
+
+
+async def _create_completion(client, timeout: float, **kwargs):
+    """
+    Membuat chat completion dengan penanganan khusus model yang hanya menerima
+    temperature tertentu (mis. Kimi K2.7 Code: hanya temperature=1).
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(client.chat.completions.create, **kwargs),
+            timeout=timeout,
+        )
+    except Exception as e:
+        text = str(e).lower()
+        if kwargs.get("temperature") != 1.0 and "temperature" in text and "1" in text:
+            retry_kwargs = {**kwargs, "temperature": 1.0}
+            return await asyncio.wait_for(
+                asyncio.to_thread(client.chat.completions.create, **retry_kwargs),
+                timeout=timeout,
+            )
+        raise
 
 
 async def chat_opencode_go(
@@ -46,6 +79,7 @@ async def chat_opencode_go(
     chat_id: int = 0,
     model: Optional[str] = None,
     timeout: Optional[float] = None,
+    temperature: float = 0.7,
 ) -> str:
     """
     Memanggil model OpenCode Go dengan dukungan function calling & riwayat percakapan.
@@ -58,13 +92,14 @@ async def chat_opencode_go(
         chat_id: ID chat Telegram untuk inject ke tool executor.
         model: ID model OpenCode Go (default deepseek-v4-flash).
         timeout: Batas waktu per panggilan API (detik).
+        temperature: Temperatur generasi (beberapa model hanya menerima nilai tertentu).
 
     Returns:
         String respons dari model.
     """
     from src.tools import convert_tools_to_openai_format, execute_tool
 
-    client = _get_opencode_go_client()
+    client = _get_opencode_go_client(chat_id)
     model_name = (model or OPENCODE_GO_DEFAULT_MODEL).strip()
     call_timeout = timeout or OPENCODE_GO_TIMEOUT
 
@@ -85,17 +120,14 @@ async def chat_opencode_go(
     kwargs: dict[str, Any] = {
         "model": model_name,
         "messages": messages,
-        "temperature": 0.7,
+        "temperature": temperature,
         "max_tokens": 4096,
     }
     if openai_tools:
         kwargs["tools"] = openai_tools
         kwargs["tool_choice"] = "auto"
 
-    response = await asyncio.wait_for(
-        asyncio.to_thread(client.chat.completions.create, **kwargs),
-        timeout=call_timeout,
-    )
+    response = await _create_completion(client, call_timeout, **kwargs)
     response_message = response.choices[0].message
 
     total_tokens = 0
@@ -114,7 +146,7 @@ async def chat_opencode_go(
     follow_kwargs: dict[str, Any] = {
         "model": model_name,
         "messages": messages,
-        "temperature": 0.7,
+        "temperature": temperature,
         "max_tokens": 4096,
     }
 
@@ -178,10 +210,7 @@ async def chat_opencode_go(
                 "content": tool_content,
             })
 
-        response = await asyncio.wait_for(
-            asyncio.to_thread(client.chat.completions.create, **follow_kwargs),
-            timeout=call_timeout,
-        )
+        response = await _create_completion(client, call_timeout, **follow_kwargs)
         response_message = response.choices[0].message
         if hasattr(response, "usage") and response.usage:
             total_tokens += getattr(response.usage, "total_tokens", 0)
@@ -206,15 +235,12 @@ async def chat_opencode_go(
             force_kwargs: dict[str, Any] = {
                 "model": model_name,
                 "messages": messages,
-                "temperature": 0.7,
+                "temperature": temperature,
                 "max_tokens": 8192,
                 "tools": openai_tools,
                 "tool_choice": "auto",
             }
-            response = await asyncio.wait_for(
-                asyncio.to_thread(client.chat.completions.create, **force_kwargs),
-                timeout=call_timeout,
-            )
+            response = await _create_completion(client, call_timeout, **force_kwargs)
             response_message = response.choices[0].message
             if hasattr(response, "usage") and response.usage:
                 total_tokens += getattr(response.usage, "total_tokens", 0)
@@ -254,10 +280,7 @@ async def chat_opencode_go(
                         "content": json.dumps(tool_result, ensure_ascii=False) if not isinstance(tool_result, str) else tool_result,
                     })
 
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(client.chat.completions.create, **follow_kwargs),
-                    timeout=call_timeout,
-                )
+                response = await _create_completion(client, call_timeout, **follow_kwargs)
                 response_message = response.choices[0].message
                 final_text = response_message.content or ""
                 if hasattr(response, "usage") and response.usage:
