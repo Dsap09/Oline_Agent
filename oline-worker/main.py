@@ -133,6 +133,7 @@ async def _install_opencode_cli() -> str | None:
         os.makedirs(OPENCODE_PREFIX, exist_ok=True)
         proc = await asyncio.create_subprocess_exec(
             "npm", "install", "--prefix", OPENCODE_PREFIX,
+            "--no-audit", "--no-fund", "--loglevel=error",
             f"opencode-ai@{OPENCODE_CLI_VERSION}",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -155,8 +156,10 @@ async def _install_opencode_cli() -> str | None:
 async def _ensure_opencode_cli() -> None:
     """
     Startup check untuk coding agent: pastikan node/npm/git/opencode tersedia di worker.
-    Jika opencode CLI belum ada tapi node+npm ada, install ke prefix lokal (writable).
-    Hasil check dicatat ke log agar mudah didiagnosis dari dashboard Render.
+    PENTING (memori): install opencode-ai TIDAK dilakukan di startup — npm install
+    memakai ratusan MB dan menyebabkan OOM (512 MB) bila berjalan bersamaan dengan
+    task landing. Install dilakukan ON-DEMAND hanya saat task coding_agent berjalan
+    (lihat `_try_opencode_cli`).
     """
     node_ok = _tool_available("node")
     npm_ok = _tool_available("npm")
@@ -192,8 +195,12 @@ async def _ensure_opencode_cli() -> None:
         )
         return
 
-    # Pastikan credential DeepInfra tersedia untuk CLI (via auth.json).
-    await _install_opencode_cli()
+    # Sengaja TIDAK install di startup (cegah OOM 512 MB). Install on-demand
+    # saat task coding_agent benar-benar berjalan.
+    logger.info(
+        "[startup] opencode CLI belum terpasang — akan diinstall on-demand saat "
+        "task coding_agent berjalan (hemat memori)."
+    )
 
 
 @app.on_event("startup")
