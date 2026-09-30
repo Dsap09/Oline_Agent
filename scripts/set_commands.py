@@ -49,6 +49,7 @@ COMMANDS = [
     {"command": "log", "description": "Lihat analisis log error Vercel"},
     {"command": "persona", "description": "Atur gaya komunikasi: /persona <gaya>"},
     {"command": "models", "description": "Pilih model AI manual: /models [info|status|reset]"},
+    {"command": "memory", "description": "Atur memori otomatis: /memory [on|off|list]"},
     {"command": "jurnal", "description": "Simpan catatan jurnal: /jurnal <teks>"},
     {"command": "set_token", "description": "Simpan token layanan: /set_token <layanan> <token>"},
 ]

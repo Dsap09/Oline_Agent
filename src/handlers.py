@@ -485,6 +485,13 @@ async def process_pending_task(target_chat_id: Optional[int] = None) -> dict[str
             if not success_edited:
                 await send_telegram_message(chat_id, response_text)
 
+            # Auto-save memori proaktif (fallback Vercel; best-effort)
+            try:
+                from src.memory import maybe_autosave
+                await maybe_autosave(chat_id, perintah, str(response_text), user_name)
+            except Exception as mem_err:
+                logger.warning("Auto-save memori (pending task) gagal: %s", str(mem_err))
+
             # Trigger self_monitor untuk intent berat yang diproses di background
             # (paritas perilaku dengan slow path sinkron sebelumnya).
             if not is_landing:

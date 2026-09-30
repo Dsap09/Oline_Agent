@@ -40,8 +40,11 @@ def create_application() -> Application:
     """
     Membuat dan mengkonfigurasi Application python-telegram-bot.
     Untuk mode webhook (stateless per-request di Vercel).
+    Token dibaca saat pemanggilan (bukan saat import) agar aman untuk
+    berbagai urutan inisialisasi/test maupun rotasi env.
     """
-    if not TELEGRAM_BOT_TOKEN:
+    token = (os.environ.get("TELEGRAM_BOT_TOKEN", "") or TELEGRAM_BOT_TOKEN).strip()
+    if not token:
         raise ValueError(
             "TELEGRAM_BOT_TOKEN environment variable is not set. "
             "Cannot initialize Telegram bot."
@@ -49,7 +52,7 @@ def create_application() -> Application:
 
     application = (
         Application.builder()
-        .token(TELEGRAM_BOT_TOKEN)
+        .token(token)
         .updater(None)  # Tidak pakai polling, hanya webhook
         .build()
     )
@@ -77,6 +80,7 @@ def create_application() -> Application:
     application.add_handler(CommandHandler("log", handle_log))
     application.add_handler(CommandHandler("persona", handle_persona))
     application.add_handler(CommandHandler("models", handle_models))
+    application.add_handler(CommandHandler("memory", handle_memory))
     application.add_handler(CommandHandler("jurnal", handle_jurnal_command))
     application.add_handler(CommandHandler("set_token", handle_set_token))
     application.add_handler(
@@ -138,6 +142,7 @@ COMMAND_HELP_DETAIL = {
     "log": "Lihat analisis log error Vercel.",
     "persona": "Atur gaya komunikasi. Format: /persona <gaya>",
     "models": "Pilih model AI manual. Format: /models [info|status|reset|preset]",
+    "memory": "Atur memori otomatis ke Notion. Format: /memory [on|off|list|delete|clear]",
     "jurnal": "Simpan catatan jurnal. Format: /jurnal <teks>",
     "set_token": "Simpan token layanan. Format: /set_token <layanan> <token>",
 }
@@ -173,6 +178,7 @@ COMMAND_HELP_TEXT = (
     "/matikan <fitur> — nonaktifkan fitur\n"
     "/persona <gaya> — atur gaya komunikasi\n"
     "/models — pilih model AI manual\n"
+    "/memory — atur memori otomatis\n"
     "/log — lihat log error Vercel\n\n"
     "Ketik /help <perintah> untuk detail, misal: /help cuaca\n"
     "Atau cukup ngobrol langsung seperti biasa!"
@@ -213,6 +219,7 @@ MENU_KEYBOARD = InlineKeyboardMarkup([
     [InlineKeyboardButton("Persona", callback_data="cmd:persona"),
      InlineKeyboardButton("Fitur", callback_data="cmd:fitur")],
     [InlineKeyboardButton("Model AI", callback_data="cmd:models")],
+    [InlineKeyboardButton("Memori", callback_data="cmd:memory")],
 ])
 
 
@@ -249,6 +256,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _handle_model_callback(query, chat_id, data[6:].strip())
         return
 
+    # Tombol pengaturan memori (command /memory)
+    if data.startswith("mem:"):
+        await _handle_memory_callback(query, chat_id, data[4:].strip())
+        return
+
     if not data.startswith("cmd:"):
         return
     cmd = data[4:].strip()
@@ -281,6 +293,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
     elif cmd == "models":
         await _do_models(chat_id, query.message)
+    elif cmd == "memory":
+        await _do_memory(chat_id, query.message)
     elif cmd == "fitur":
         from src.tools import execute_check_feature_health
         await query.message.reply_text(await execute_check_feature_health())
@@ -875,6 +889,160 @@ async def _handle_model_callback(query, chat_id: int, model_key: str) -> None:
         await query.message.reply_text(text)
 
 
+# --- Command /memory: kontrol auto-save memori (langsung, tanpa AI) ---
+
+def _memory_view(settings: dict):
+    """Menyusun teks + keyboard pengaturan memori otomatis."""
+    from src.memory import MEMORY_CATEGORIES
+
+    enabled = bool(settings.get("enabled", True))
+    notify = bool(settings.get("notify", True))
+    cats = settings.get("categories", [])
+
+    lines = [
+        "🧠 Memori Otomatis Oline",
+        "",
+        f"Auto-save: {'AKTIF ✅' if enabled else 'NONAKTIF ⬜'}",
+        f"Notifikasi: {'aktif' if notify else 'nonaktif'}",
+        "",
+        "Kategori aktif:",
+    ]
+    for cat in MEMORY_CATEGORIES:
+        mark = "✅" if cat in cats else "⬜"
+        lines.append(f"{mark} {cat.capitalize()}")
+    lines += [
+        "",
+        "Perintah:",
+        "/memory on | off — aktif/nonaktif",
+        "/memory list — lihat memori tersimpan",
+        "/memory delete <id> — hapus satu entri",
+        "/memory clear — hapus semua (perlu konfirmasi)",
+        "",
+        "Klik tombol untuk toggle cepat.",
+    ]
+
+    rows = [[InlineKeyboardButton(f"{'✅' if enabled else '⬜'} Auto-save", callback_data="mem:toggle")]]
+    for cat in MEMORY_CATEGORIES:
+        mark = "✅" if cat in cats else "⬜"
+        rows.append([InlineKeyboardButton(f"{mark} {cat.capitalize()}", callback_data=f"mem:cat:{cat}")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+async def _do_memory(chat_id: int, destination, sub: str = "", args: Optional[list] = None) -> None:
+    """Eksekusi subcommand /memory (dipakai command & tombol menu)."""
+    from src.memory import MEMORY_CATEGORIES, get_memory_settings, set_memory_settings
+
+    sub = (sub or "").strip().lower()
+    args = args or []
+
+    if sub in ("on", "off"):
+        enabled = sub == "on"
+        await set_memory_settings(chat_id, enabled=enabled)
+        await destination.send_message(
+            "✅ Auto-save memori diaktifkan." if enabled else "🛑 Auto-save memori dimatikan. Oline tidak akan mencatat otomatis."
+        )
+        return
+
+    if sub == "list":
+        from src.notion import query_memory_entries
+        entries = await query_memory_entries()
+        if not entries:
+            await destination.send_message("Belum ada memori tersimpan.")
+            return
+        lines = [f"🧠 Memori tersimpan ({len(entries)}):", ""]
+        for entry in entries[:20]:
+            jenis = entry.get("jenis") or "-"
+            lines.append(f"• [{jenis}] {entry.get('title') or '(tanpa judul)'}")
+            lines.append(f"  id: {entry.get('id')}")
+        if len(entries) > 20:
+            lines.append(f"… dan {len(entries) - 20} lainnya.")
+        lines.append("")
+        lines.append("Hapus dengan: /memory delete <id>")
+        await destination.send_message("\n".join(lines))
+        return
+
+    if sub == "delete":
+        page_id = (args[0] if args else "").strip()
+        if not page_id:
+            await destination.send_message("Format: /memory delete <id>\nLihat id via /memory list.")
+            return
+        from src.notion import archive_memory_page
+        res = await archive_memory_page(page_id)
+        if isinstance(res, dict) and res.get("status") == "success":
+            await destination.send_message("✅ Memori dihapus.")
+        else:
+            err = res.get("error", "Gagal menghapus memori.") if isinstance(res, dict) else str(res)
+            await destination.send_message(f"❌ {err}")
+        return
+
+    if sub == "clear":
+        await destination.send_message(
+            "⚠️ Yakin hapus SEMUA memori? Tindakan ini tidak bisa dibatalkan.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑️ Ya, hapus semua", callback_data="mem:clear_confirm")],
+                [InlineKeyboardButton("❌ Batal", callback_data="mem:clear_cancel")],
+            ]),
+        )
+        return
+
+    # default/status/config -> tampilkan pengaturan
+    settings = await get_memory_settings(chat_id)
+    text, keyboard = _memory_view(settings)
+    await destination.send_message(text, reply_markup=keyboard)
+
+
+async def handle_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler untuk command /memory — kontrol auto-save memori (tanpa lewat AI)."""
+    if not update.effective_chat or not update.message:
+        return
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+    sub = args[0] if args else ""
+    await _do_memory(update.effective_chat.id, update.effective_chat, sub, args[1:])
+
+
+async def _handle_memory_callback(query, chat_id: int, action: str) -> None:
+    """Menangani tombol pengaturan memori dari /memory."""
+    from src.memory import MEMORY_CATEGORIES, get_memory_settings, set_memory_settings
+
+    action = (action or "").strip()
+
+    if action == "toggle":
+        settings = await get_memory_settings(chat_id)
+        await set_memory_settings(chat_id, enabled=not settings.get("enabled", True))
+    elif action.startswith("cat:"):
+        cat = action[4:].strip().lower()
+        if cat in MEMORY_CATEGORIES:
+            settings = await get_memory_settings(chat_id)
+            cats = list(settings.get("categories", []))
+            if cat in cats:
+                cats.remove(cat)
+            else:
+                cats.append(cat)
+            await set_memory_settings(chat_id, categories=cats)
+    elif action == "clear_confirm":
+        from src.notion import archive_all_memory_pages
+        res = await archive_all_memory_pages()
+        msg = res.get("message", "Memori dihapus.") if isinstance(res, dict) else "Selesai."
+        try:
+            await query.message.edit_text(f"🗑️ {msg}")
+        except Exception:
+            await query.message.reply_text(f"🗑️ {msg}")
+        return
+    elif action == "clear_cancel":
+        try:
+            await query.message.edit_text("Batal. Tidak ada memori yang dihapus.")
+        except Exception:
+            await query.message.reply_text("Batal. Tidak ada memori yang dihapus.")
+        return
+
+    settings = await get_memory_settings(chat_id)
+    text, keyboard = _memory_view(settings)
+    try:
+        await query.message.edit_text(text, reply_markup=keyboard)
+    except Exception:
+        await query.message.reply_text(text, reply_markup=keyboard)
+
+
 async def handle_set_token(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -1187,13 +1355,37 @@ CONFIRM_KEYWORDS = ["ya", "iya", "betul", "benar", "1", "2", "status", "koneksi"
 
 PERBAIKAN_KEYWORDS = ["perbaiki", "benerin", "fix", "solusi"]
 
+# Frasa eksplisit permintaan perbaikan (kata perbaikan + konteks error/kode).
+PERBAIKAN_PHRASES = [
+    "perbaiki error", "perbaiki bug", "perbaiki kode", "perbaiki dirimu",
+    "perbaiki sistem", "perbaiki program", "perbaiki fitur",
+    "benerin error", "benerin bug", "benerin kode",
+    "fix error", "fix bug", "fix kode",
+    "solusi error", "solusi bug", "atasi error", "atasi bug",
+]
+
 
 def is_fix_request(text: str) -> bool:
-    """Mendeteksi apakah pesan pengguna meminta perbaikan error / bug."""
+    """
+    Mendeteksi apakah pesan pengguna meminta perbaikan error / bug.
+
+    PENTING: tidak boleh false-positive pada pesan biasa yang kebetulan memuat kata
+    seperti "solusi" (mis. deskripsi landing page). Hanya dianggap permintaan
+    perbaikan bila ada FRASA eksplisit (perbaiki/fix + error/bug/kode) atau pesan
+    pendek imperatif (maks 4 kata) yang memuat kata perbaikan.
+    """
     if not text:
         return False
     text_lower = text.lower().strip()
-    return any(kw in text_lower for kw in PERBAIKAN_KEYWORDS)
+
+    if any(phrase in text_lower for phrase in PERBAIKAN_PHRASES):
+        return True
+
+    words = text_lower.split()
+    if len(words) <= 4 and any(kw in text_lower for kw in PERBAIKAN_KEYWORDS):
+        return True
+
+    return False
 
 
 def is_skip_request(text: str) -> bool:
@@ -1748,14 +1940,10 @@ async def handle_message(
         )
         return
 
-    # Deteksi jika pesan berisi aturan/preferensi baru untuk disimpan ke Notion
+    # Deteksi aturan/preferensi baru: penyimpanan ditangani pipeline auto-save memori
+    # (deteksi AI + anti-duplikat + rate limit + audit) — lihat src/memory.py.
     if is_rule_message(user_message):
-        try:
-            from src.notion import save_memory_to_notion
-            rule_title = generate_memory_title(user_message)
-            await save_memory_to_notion(title=rule_title, content=user_message, memory_type="Aturan")
-        except Exception as rule_err:
-            logger.warning("Gagal menyimpan aturan ke Notion: %s", str(rule_err))
+        logger.info("Pesan terdeteksi berisi aturan/preferensi (menunggu auto-save memori).")
 
     # Deteksi jika pesan merupakan permintaan perbaikan error (brief.md poin 4)
     if is_fix_request(user_message):
@@ -1930,6 +2118,13 @@ async def handle_message(
             await update.effective_chat.send_message(chunk)
     else:
         await update.effective_chat.send_message(response)
+
+    # Auto-save memori proaktif (setelah balasan terkirim; best-effort, tidak memblokir UX)
+    try:
+        from src.memory import maybe_autosave
+        await maybe_autosave(chat_id, user_message, response, user_name)
+    except Exception as mem_err:
+        logger.warning("Auto-save memori gagal: %s", str(mem_err))
 
 
 async def download_telegram_file_with_retry(

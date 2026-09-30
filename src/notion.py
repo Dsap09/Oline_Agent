@@ -253,15 +253,19 @@ async def add_notion_property(
 
 async def _inspect_and_ensure_memory_schema(
     client: httpx.AsyncClient, database_id: str, headers: dict
-) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
+) -> tuple[str, str, str, str, Optional[str], Optional[str]]:
     """
-    Inspeksi skema database Notion dan pastikan properti Title, Jenis (select), Tanggal (date), dan Isi (rich_text) ada.
-    Returns: (title_key, category_key, date_key, isi_key)
+    Inspeksi skema database Notion dan pastikan properti Title, Jenis (select),
+    Tanggal (date), Isi (rich_text), Sumber (rich_text), dan Confidence (number) ada.
+    Returns: (title_key, category_key, date_key, isi_key, sumber_key, confidence_key)
+    sumber_key/confidence_key bisa None bila gagal ditambahkan (degradasi anggun).
     """
     title_key = "Title"
     category_key = None
     date_key = None
     isi_key = None
+    sumber_key = None
+    confidence_key = None
 
     try:
         db_resp = await client.get(
@@ -281,8 +285,17 @@ async def _inspect_and_ensure_memory_schema(
                     if p_clean in ("tanggal", "date") or not date_key:
                         date_key = p_name
                 elif p_type == "rich_text":
-                    if p_clean in ("isi", "content", "detail", "text") or not isi_key:
+                    if p_clean in ("isi", "content", "detail", "text"):
                         isi_key = p_name
+                    elif p_clean in ("sumber", "source"):
+                        sumber_key = p_name
+                    elif isi_key is None:
+                        isi_key = p_name
+                    elif sumber_key is None:
+                        sumber_key = p_name
+                elif p_type == "number":
+                    if p_clean in ("confidence", "konfidensi", "skor", "score") or not confidence_key:
+                        confidence_key = p_name
 
             # Patch database jika ada properti penting yang belum ada
             missing_props = {}
@@ -290,6 +303,10 @@ async def _inspect_and_ensure_memory_schema(
                 missing_props["Jenis"] = {"select": {}}
             if not isi_key:
                 missing_props["Isi"] = {"rich_text": {}}
+            if not sumber_key:
+                missing_props["Sumber"] = {"rich_text": {}}
+            if not confidence_key:
+                missing_props["Confidence"] = {"number": {}}
 
             if missing_props:
                 try:
@@ -299,39 +316,54 @@ async def _inspect_and_ensure_memory_schema(
                         headers=headers,
                     )
                     if patch_resp.status_code == 200:
-                        if not category_key and "Jenis" in missing_props:
+                        if not category_key:
                             category_key = "Jenis"
-                        if not isi_key and "Isi" in missing_props:
+                        if not isi_key:
                             isi_key = "Isi"
+                        if not sumber_key:
+                            sumber_key = "Sumber"
+                        if not confidence_key:
+                            confidence_key = "Confidence"
                 except Exception as patch_err:
                     logger.warning("Gagal menambahkan missing properties ke Notion: %s", str(patch_err))
     except Exception as e:
         logger.warning("Gagal inspeksi skema Notion memory database: %s", str(e))
 
-    return title_key, category_key or "Jenis", date_key or "Tanggal", isi_key or "Isi"
+    return (
+        title_key,
+        category_key or "Jenis",
+        date_key or "Tanggal",
+        isi_key or "Isi",
+        sumber_key,
+        confidence_key,
+    )
 
 
-async def save_memory_to_notion(
-    title: str, content: str, memory_type: str = "Aturan"
-) -> str:
+async def save_memory_entry(
+    title: str,
+    content: str,
+    memory_type: str = "Aturan",
+    sumber: str = "",
+    confidence: Optional[float] = None,
+    source_message: str = "",
+) -> dict[str, Any]:
     """
-    Menyimpan memori baru (Aturan, Preferensi, Ringkasan, Fakta) ke database Notion 'Memori Oline'.
-    Gunakan NOTION_MEMORY_DATABASE_ID (fallback ke NOTION_DATABASE_ID jika belum diset).
+    Menyimpan memori baru ke database Notion 'Memori Oline' (versi terstruktur).
+    Returns dict: {"status": "success", "page_id", "url", ...} atau {"error": ...}.
     """
     api_key = os.environ.get("NOTION_API_KEY", "").strip()
     database_id = _get_notion_memory_db_id()
 
     if not api_key:
-        return "Gagal menyimpan memori: NOTION_API_KEY belum dikonfigurasi."
+        return {"error": "NOTION_API_KEY belum dikonfigurasi."}
     if not database_id:
-        return "Gagal menyimpan memori: Database ID Notion belum dikonfigurasi."
+        return {"error": "Database ID Notion belum dikonfigurasi."}
 
     if not title or not title.strip():
         title = f"Memori {memory_type}"
     if not content or not content.strip():
-        return "Gagal menyimpan memori: Content kosong."
+        return {"error": "Content kosong."}
 
-    # Ringkas judul maksimal 100 karakter
     clean_title = title.strip()[:100]
 
     wib = timezone(timedelta(hours=7))
@@ -345,8 +377,8 @@ async def save_memory_to_notion(
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            title_key, category_key, date_key, isi_key = await _inspect_and_ensure_memory_schema(
-                client, database_id, headers
+            title_key, category_key, date_key, isi_key, sumber_key, confidence_key = (
+                await _inspect_and_ensure_memory_schema(client, database_id, headers)
             )
 
             properties_payload: dict[str, Any] = {
@@ -358,6 +390,15 @@ async def save_memory_to_notion(
                 properties_payload[date_key] = {"date": {"start": now_iso}}
             if isi_key:
                 properties_payload[isi_key] = {"rich_text": [{"type": "text", "text": {"content": content.strip()}}]}
+            if sumber_key and (sumber or source_message):
+                properties_payload[sumber_key] = {
+                    "rich_text": [{"type": "text", "text": {"content": (sumber or source_message).strip()[:1800]}}]
+                }
+            if confidence_key and confidence is not None:
+                try:
+                    properties_payload[confidence_key] = {"number": float(confidence)}
+                except (TypeError, ValueError):
+                    pass
 
             payload = {
                 "parent": {"database_id": database_id},
@@ -375,20 +416,234 @@ async def save_memory_to_notion(
 
             resp = await client.post("https://api.notion.com/v1/pages", json=payload, headers=headers)
             if resp.status_code == 200:
+                data = resp.json()
                 # Write-through cache update: langsung refresh KV cache dari Notion dengan TTL 24 jam
                 await read_memory_from_notion(memory_type, force_refresh=True)
                 await read_memory_from_notion(None, force_refresh=True)
-                return "Memori berhasil disimpan."
+                return {
+                    "status": "success",
+                    "title": clean_title,
+                    "category": (memory_type or "Aturan").strip(),
+                    "page_id": data.get("id", ""),
+                    "url": data.get("url", ""),
+                    "message": f"Catatan '{clean_title}' berhasil disimpan ke Notion.",
+                }
             elif resp.status_code == 404:
                 logger.warning("Notion memory database 404 Not Found (object_not_found). Check integration permissions.")
-                return "Gagal menyimpan memori: Database Notion tidak ditemukan (404). Pastikan database sudah dibagikan ke Integrasi Notion."
+                return {"error": "Database Notion tidak ditemukan (404). Pastikan database sudah dibagikan ke Integrasi Notion."}
             else:
                 err_text = resp.text[:200]
                 logger.error("Notion save_memory error (Status %d): %s", resp.status_code, err_text)
-                return f"Gagal menyimpan memori: Status {resp.status_code} - {err_text}"
+                return {"error": f"Gagal menyimpan memori: Status {resp.status_code} - {err_text}"}
     except Exception as e:
-        logger.error("Error in save_memory_to_notion: %s", str(e))
-        return f"Gagal menyimpan memori: {str(e)}"
+        logger.error("Error in save_memory_entry: %s", str(e))
+        return {"error": f"Gagal menyimpan memori: {str(e)}"}
+
+
+async def save_memory_to_notion(
+    title: str, content: str, memory_type: str = "Aturan"
+) -> str:
+    """
+    Backward-compatible wrapper: menyimpan memori dan mengembalikan string status
+    (dipakai tool/legacy callers). Untuk orchestration butuh page_id, pakai save_memory_entry.
+    """
+    res = await save_memory_entry(title=title, content=content, memory_type=memory_type)
+    if isinstance(res, dict) and res.get("status") == "success":
+        return "Memori berhasil disimpan."
+    if isinstance(res, dict):
+        return res.get("error", "Gagal menyimpan memori.")
+    return str(res)
+
+
+def _extract_rich_text(props: dict, key: Optional[str]) -> str:
+    if not key or key not in props:
+        return ""
+    arr = props.get(key, {}).get("rich_text", []) or []
+    if not arr:
+        return ""
+    return arr[0].get("text", {}).get("content", "").strip()
+
+
+def _extract_select(props: dict, key: str) -> str:
+    info = props.get(key) or {}
+    select = info.get("select") or {}
+    return (select.get("name") or "").strip()
+
+
+async def query_memory_entries(memory_type: Optional[str] = None) -> list[dict[str, Any]]:
+    """
+    Query langsung database Memori Notion (bukan cache) dan mengembalikan entri terstruktur.
+    Returns list dict: {id, title, isi, jenis, url, sumber, confidence}.
+    """
+    api_key = os.environ.get("NOTION_API_KEY", "").strip()
+    database_id = _get_notion_memory_db_id()
+    if not api_key or not database_id:
+        return []
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            title_key, category_key, _date_key, isi_key, sumber_key, confidence_key = (
+                await _inspect_and_ensure_memory_schema(client, database_id, headers)
+            )
+
+            payload: dict[str, Any] = {}
+            if memory_type and category_key:
+                payload["filter"] = {
+                    "property": category_key,
+                    "select": {"equals": memory_type.strip()},
+                }
+
+            resp = await client.post(
+                f"https://api.notion.com/v1/databases/{database_id}/query",
+                json=payload,
+                headers=headers,
+            )
+            if resp.status_code != 200:
+                logger.warning("Notion query entries status %d: %s", resp.status_code, resp.text[:200])
+                return []
+
+            entries: list[dict[str, Any]] = []
+            for page in resp.json().get("results", []):
+                props = page.get("properties", {})
+                t_prop = props.get(title_key, {}).get("title", []) or props.get("Title", {}).get("title", [])
+                title_text = t_prop[0].get("text", {}).get("content", "").strip() if t_prop else ""
+                isi_text = _extract_rich_text(props, isi_key) or _extract_rich_text(props, "Isi")
+                sumber_text = _extract_rich_text(props, sumber_key) if sumber_key else ""
+                confidence_val = None
+                if confidence_key and confidence_key in props:
+                    confidence_val = props.get(confidence_key, {}).get("number")
+                entries.append({
+                    "id": page.get("id", ""),
+                    "title": title_text,
+                    "isi": isi_text,
+                    "jenis": _extract_select(props, category_key),
+                    "url": page.get("url", ""),
+                    "sumber": sumber_text,
+                    "confidence": confidence_val,
+                })
+            return entries
+    except Exception as e:
+        logger.error("Error in query_memory_entries: %s", str(e))
+        return []
+
+
+async def update_memory_page(
+    page_id: str,
+    content: Optional[str] = None,
+    title: Optional[str] = None,
+    memory_type: Optional[str] = None,
+    sumber: Optional[str] = None,
+    confidence: Optional[float] = None,
+) -> dict[str, Any]:
+    """
+    Memperbarui halaman memori Notion yang sudah ada (bukan membuat duplikat baru).
+    Returns dict {"status": "success", ...} atau {"error": ...}.
+    """
+    api_key = os.environ.get("NOTION_API_KEY", "").strip()
+    database_id = _get_notion_memory_db_id()
+    if not api_key or not database_id:
+        return {"error": "Notion belum dikonfigurasi."}
+    if not page_id:
+        return {"error": "page_id kosong."}
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            title_key, category_key, date_key, isi_key, sumber_key, confidence_key = (
+                await _inspect_and_ensure_memory_schema(client, database_id, headers)
+            )
+
+            properties_payload: dict[str, Any] = {}
+            if title and title.strip():
+                properties_payload[title_key] = {"title": [{"text": {"content": title.strip()[:100]}}]}
+            if memory_type and category_key:
+                properties_payload[category_key] = {"select": {"name": memory_type.strip()}}
+            if content and content.strip() and isi_key:
+                properties_payload[isi_key] = {
+                    "rich_text": [{"type": "text", "text": {"content": content.strip()[:1800]}}]
+                }
+            if sumber and sumber_key:
+                properties_payload[sumber_key] = {
+                    "rich_text": [{"type": "text", "text": {"content": sumber.strip()[:1800]}}]
+                }
+            if confidence is not None and confidence_key:
+                try:
+                    properties_payload[confidence_key] = {"number": float(confidence)}
+                except (TypeError, ValueError):
+                    pass
+
+            if not properties_payload:
+                return {"error": "Tidak ada perubahan properti."}
+
+            resp = await client.patch(
+                f"https://api.notion.com/v1/pages/{page_id}",
+                json={"properties": properties_payload},
+                headers=headers,
+            )
+            if resp.status_code == 200:
+                await clear_memory_cache()
+                return {"status": "success", "page_id": page_id}
+            err_text = resp.text[:200]
+            logger.error("Notion update page error (Status %d): %s", resp.status_code, err_text)
+            return {"error": f"Gagal memperbarui memori: Status {resp.status_code} - {err_text}"}
+    except Exception as e:
+        logger.error("Error in update_memory_page: %s", str(e))
+        return {"error": f"Gagal memperbarui memori: {str(e)}"}
+
+
+async def archive_memory_page(page_id: str) -> dict[str, Any]:
+    """Mengarsipkan (menghapus lembut) satu halaman memori Notion."""
+    api_key = os.environ.get("NOTION_API_KEY", "").strip()
+    if not api_key:
+        return {"error": "NOTION_API_KEY belum dikonfigurasi."}
+    if not page_id:
+        return {"error": "page_id kosong."}
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.patch(
+                f"https://api.notion.com/v1/pages/{page_id}",
+                json={"archived": True},
+                headers=headers,
+            )
+            if resp.status_code == 200:
+                await clear_memory_cache()
+                return {"status": "success", "page_id": page_id}
+            err_text = resp.text[:200]
+            logger.error("Notion archive page error (Status %d): %s", resp.status_code, err_text)
+            return {"error": f"Gagal menghapus memori: Status {resp.status_code} - {err_text}"}
+    except Exception as e:
+        logger.error("Error in archive_memory_page: %s", str(e))
+        return {"error": f"Gagal menghapus memori: {str(e)}"}
+
+
+async def archive_all_memory_pages() -> dict[str, Any]:
+    """Mengarsipkan semua entri database Memori Notion (dipakai /memory clear)."""
+    entries = await query_memory_entries()
+    if not entries:
+        return {"status": "success", "count": 0, "message": "Tidak ada memori yang tersimpan."}
+    count = 0
+    for entry in entries:
+        res = await archive_memory_page(entry.get("id", ""))
+        if isinstance(res, dict) and res.get("status") == "success":
+            count += 1
+    return {"status": "success", "count": count, "message": f"{count} memori berhasil dihapus."}
 
 
 async def verify_notion_databases() -> dict[str, Any]:
@@ -495,8 +750,8 @@ async def read_memory_from_notion(
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            title_key, category_key, date_key, isi_key = await _inspect_and_ensure_memory_schema(
-                client, database_id, headers
+            title_key, category_key, date_key, isi_key, _sumber_key, _confidence_key = (
+                await _inspect_and_ensure_memory_schema(client, database_id, headers)
             )
 
             payload: dict[str, Any] = {}

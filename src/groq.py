@@ -75,13 +75,13 @@ async def chat_groq(
                     content = response.choices[0].message.content
                     if content and content.strip():
                         logger.info("Successfully received response from Groq (%s)", model_name)
-                        
+
                         # Track Groq token usage
+                        tokens_used = 0
                         if chat_id:
                             try:
                                 from src.kv import save_groq_usage
 
-                                tokens_used = 0
                                 if hasattr(response, "usage") and response.usage:
                                     usage = response.usage
                                     if isinstance(usage, dict):

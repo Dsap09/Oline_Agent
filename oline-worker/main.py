@@ -315,6 +315,13 @@ async def _run_task(chat_id: int, perintah: str, intent: str, user_name: str, ms
         else:
             ok = await send_telegram_message(chat_id, response_text)
 
+        # Auto-save memori proaktif (best-effort; worker tidak dibatasi timeout Vercel)
+        try:
+            from src.memory import maybe_autosave
+            await maybe_autosave(chat_id, perintah, str(response_text), user_name)
+        except Exception as mem_err:
+            logger.warning("Auto-save memori (worker) gagal: %s", str(mem_err))
+
         await clear_pending_task(chat_id)
         await clear_progress_message_id(chat_id)
         await clear_task_start(chat_id)

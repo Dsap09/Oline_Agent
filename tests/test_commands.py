@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Set token sebelum import src.bot agar create_application bisa dibangun di tes
 os.environ["TELEGRAM_BOT_TOKEN"] = "test:token"
 
-from src.bot import COMMAND_HELP_DETAIL, detect_intent, detect_intent_async
+from src.bot import COMMAND_HELP_DETAIL, detect_intent, detect_intent_async, is_fix_request
 from src.kv import clear_history, get_persona, set_persona
 from src.personas import PERSONA_STYLES
 
@@ -39,7 +39,7 @@ class TestCommandHelp(unittest.TestCase):
         for cmd in ("start", "help", "menu", "clear", "batal", "status",
                     "cuaca", "saham", "cari", "gambar", "kuota", "jurnal",
                     "list", "preview", "landing", "deploy", "tasks",
-                    "fitur", "aktifkan", "matikan", "log", "persona", "models"):
+                    "fitur", "aktifkan", "matikan", "log", "persona", "models", "memory"):
             self.assertIn(cmd, COMMAND_HELP_DETAIL)
 
 
@@ -90,6 +90,33 @@ class TestPersonaInPrompt(unittest.IsolatedAsyncioTestCase):
         self.assertIn("super ringkas", prompt)
 
 
+class TestFixRequestDetection(unittest.TestCase):
+    """Kata 'solusi'/'fix' di pesan biasa tidak boleh memicu alur perbaikan error."""
+
+    def test_landing_prompt_with_solusi_not_fix(self):
+        prompt = (
+            "Buatkan landing page modern dan profesional untuk startup saya bernama Dministar, "
+            "yang bergerak di bidang otomasi perusahaan berbasis AI Agent. Gunakan gaya clean "
+            "dan tech-savvy. Tone profesional namun ramah, fokus pada solusi hemat waktu, "
+            "efisiensi, dan skalabilitas."
+        )
+        self.assertFalse(is_fix_request(prompt))
+
+    def test_casual_solusi_not_fix(self):
+        self.assertFalse(is_fix_request("aku suka solusi yang kamu kasih, makasih ya"))
+        self.assertFalse(is_fix_request("tolong beri solusi terbaik untuk bisnis saya"))
+
+    def test_short_imperative_detected(self):
+        self.assertTrue(is_fix_request("perbaiki"))
+        self.assertTrue(is_fix_request("benerin dong"))
+        self.assertTrue(is_fix_request("coba fix"))
+
+    def test_explicit_error_phrase_detected(self):
+        self.assertTrue(is_fix_request("tolong perbaiki error login di website"))
+        self.assertTrue(is_fix_request("fix bug yang muncul tadi"))
+        self.assertTrue(is_fix_request("perbaiki kode deploy landing page-nya"))
+
+
 class TestSahamFalsePositive(unittest.IsolatedAsyncioTestCase):
     """Pesan yang TIDAK menyebut saham tidak boleh ke-deteksi sebagai intent saham."""
 
@@ -129,7 +156,7 @@ class TestApplicationRegistration(unittest.TestCase):
         for cmd in ("start", "help", "menu", "clear", "batal", "status",
                     "cuaca", "saham", "cari", "gambar", "kuota", "jurnal",
                     "list", "preview", "landing", "deploy", "tasks",
-                    "fitur", "aktifkan", "matikan", "log", "persona", "models"):
+                    "fitur", "aktifkan", "matikan", "log", "persona", "models", "memory"):
             self.assertIn(cmd, registered)
 
 

@@ -167,17 +167,20 @@ async def _build_system_prompt_async(memory: str, user_name: str = "Teman", chat
     if memory:
         prompt += MEMORY_INJECTION_TEMPLATE.format(memory=memory)
 
-    # Membaca memori aturan & preferensi dari Notion dengan cache Vercel KV
+    # Membaca memori aturan, preferensi & fakta dari Notion dengan cache Vercel KV
     try:
         from src.notion import read_memory_from_notion
         aturan = await read_memory_from_notion("Aturan")
         preferensi = await read_memory_from_notion("Preferensi")
-        if aturan or preferensi:
+        fakta = await read_memory_from_notion("Fakta")
+        if aturan or preferensi or fakta:
             prompt += "\n\n## Memori Aturan & Preferensi dari Notion:\n"
             if aturan:
-                prompt += f"Aturan Pengguna:\n{aturan}\n"
+                prompt += f"Aturan Pengguna:\n{aturan[:2000]}\n"
             if preferensi:
-                prompt += f"Preferensi Pengguna:\n{preferensi}\n"
+                prompt += f"Preferensi Pengguna:\n{preferensi[:2000]}\n"
+            if fakta:
+                prompt += f"Fakta Pengguna:\n{fakta[:2000]}\n"
     except Exception as e:
         logger.warning("Error loading Notion memory for prompt: %s", str(e))
 

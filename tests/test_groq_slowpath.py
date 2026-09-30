@@ -137,6 +137,7 @@ class TestGroqSlowPath(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(mock_client.chat.completions.create.call_count, 2)
             mock_execute_tool.assert_called_once_with("get_weather_forecast", {"city": "Bandung"}, chat_id=12345)
 
+    @patch("src.handlers.call_model_with_fallback", new_callable=AsyncMock, side_effect=Exception("chain down"))
     @patch("src.groq.chat_groq_with_tools", new_callable=AsyncMock)
     @patch("src.gemini._generate_content_with_fallback", new_callable=AsyncMock)
     @patch("src.gemini.get_memory", new_callable=AsyncMock)
@@ -149,6 +150,7 @@ class TestGroqSlowPath(unittest.IsolatedAsyncioTestCase):
         mock_get_mem,
         mock_gen_gemini,
         mock_chat_groq_tools,
+        mock_chain,
     ):
         """Tes Slow Path: Saat Gemini melempar exception, fallback ke Groq Slow Path."""
         mock_get_mem.return_value = ""
@@ -169,6 +171,7 @@ class TestGroqSlowPath(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Cuaca di Tuban sekarang berawan, 26°C.", response)
             self.assertIn("⚠️ Oline pakai otak cadangan nih, Gemini lagi istirahat~", response)
 
+    @patch("src.handlers.call_model_with_fallback", new_callable=AsyncMock, side_effect=Exception("chain down"))
     @patch("src.groq.chat_groq_with_tools", new_callable=AsyncMock)
     @patch("src.gemini._generate_content_with_fallback", new_callable=AsyncMock)
     @patch("src.gemini.get_memory", new_callable=AsyncMock)
@@ -179,6 +182,7 @@ class TestGroqSlowPath(unittest.IsolatedAsyncioTestCase):
         mock_get_mem,
         mock_gen_gemini,
         mock_chat_groq_tools,
+        mock_chain,
     ):
         """Tes Slow Path: Saat Gemini DAN Groq dua-duanya gagal."""
         mock_get_mem.return_value = ""
@@ -193,10 +197,8 @@ class TestGroqSlowPath(unittest.IsolatedAsyncioTestCase):
                 intent="cuaca",
             )
 
-            self.assertEqual(
-                response,
-                "aduh, Oline lagi error dua-duanya nih. Coba lagi nanti ya, bestie~ 😢",
-            )
+            self.assertIn("aduh, Oline lagi error dua-duanya nih", response)
+            self.assertIn("perintah kamu udah Oline simpan", response)
 
 
 if __name__ == "__main__":

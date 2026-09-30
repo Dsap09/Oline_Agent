@@ -114,7 +114,7 @@ class TestNotionIntegration(unittest.IsolatedAsyncioTestCase):
     @patch("httpx.AsyncClient.post", new_callable=AsyncMock)
     async def test_save_memory_to_notion_targets_memory_db(self, mock_post, mock_inspect, mock_read):
         """Skenario 2: Tes save_memory_to_notion menargetkan NOTION_MEMORY_DATABASE_ID (Database Memori)."""
-        mock_inspect.return_value = ("Title", "Jenis", "Tanggal", "Isi")
+        mock_inspect.return_value = ("Title", "Jenis", "Tanggal", "Isi", "Sumber", "Confidence")
         mock_post_resp = MagicMock()
         mock_post_resp.status_code = 200
         mock_post_resp.json.return_value = {"id": "page-memory-999"}
