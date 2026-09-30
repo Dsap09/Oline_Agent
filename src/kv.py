@@ -39,6 +39,9 @@ PERSONA_PREFIX = "persona"
 PLAN_PREFIX = "coding_plan"
 MODEL_PREF_PREFIX = "model_preference"
 MODEL_LOG_PREFIX = "model_log"
+INTENT_CLARIFY_PREFIX = "intent_clarify"
+INTENT_LOG_PREFIX = "intent_log"
+INTENT_FEEDBACK_PREFIX = "intent_feedback"
 
 
 
@@ -202,6 +205,119 @@ async def get_model_audit_log(chat_id: int, limit: int = 20) -> list[dict]:
             except (json.JSONDecodeError, TypeError):
                 continue
     return entries
+
+
+# --- Intent Classifier: state klarifikasi, audit, feedback ---
+# Dipakai src/intent_classifier.py (hybrid chat vs action gate).
+
+async def save_intent_clarify(chat_id: int, perintah_asli: str, intent: str, question: str) -> bool:
+    """Menyimpan state konfirmasi intent (TTL 5 menit)."""
+    key = f"{INTENT_CLARIFY_PREFIX}:{chat_id}"
+    payload = json.dumps({
+        "perintah_asli": perintah_asli,
+        "intent": intent,
+        "question": question,
+        "waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }, ensure_ascii=False)
+    result = await _kv_request(["SET", key, payload, "EX", "300"])
+    return result is not None
+
+
+async def get_intent_clarify(chat_id: int) -> Optional[dict]:
+    """Mengambil state konfirmasi intent. Returns dict atau None bila tidak ada/expired."""
+    key = f"{INTENT_CLARIFY_PREFIX}:{chat_id}"
+    result = await _kv_request(["GET", key])
+    if result and result.get("result"):
+        try:
+            data = result["result"]
+            if isinstance(data, str):
+                data = json.loads(data)
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning("Error parsing intent clarify state: %s", str(e))
+    return None
+
+
+async def clear_intent_clarify(chat_id: int) -> bool:
+    """Menghapus state konfirmasi intent."""
+    key = f"{INTENT_CLARIFY_PREFIX}:{chat_id}"
+    result = await _kv_request(["DEL", key])
+    return result is not None
+
+
+async def log_intent_decision(
+    chat_id: int,
+    teks: str,
+    mode: str,
+    intent: Optional[str],
+    confidence: float,
+    source: str,
+) -> bool:
+    """
+    Audit keputusan intent ke KV (key intent_log:<chat_id>).
+    TTL 30 hari, maksimal 100 entri terakhir.
+    """
+    key = f"{INTENT_LOG_PREFIX}:{chat_id}"
+    payload = json.dumps({
+        "waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "teks": str(teks)[:200],
+        "mode": mode,
+        "intent": intent or "",
+        "confidence": confidence,
+        "source": source,
+    }, ensure_ascii=False)
+    res = await _kv_pipeline([
+        ["RPUSH", key, payload],
+        ["LTRIM", key, "-100", "-1"],
+        ["EXPIRE", key, "2592000"],
+    ])
+    return res is not None
+
+
+async def log_intent_feedback(chat_id: int, teks: str, predicted_intent: str, jawaban: str) -> bool:
+    """
+    Mencatat feedback user atas klasifikasi intent (mis. user menekan "Bukan").
+    TTL 30 hari, maksimal 100 entri terakhir.
+    """
+    key = f"{INTENT_FEEDBACK_PREFIX}:{chat_id}"
+    payload = json.dumps({
+        "waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "teks": str(teks)[:200],
+        "predicted_intent": predicted_intent or "",
+        "jawaban": str(jawaban)[:50],
+    }, ensure_ascii=False)
+    res = await _kv_pipeline([
+        ["RPUSH", key, payload],
+        ["LTRIM", key, "-100", "-1"],
+        ["EXPIRE", key, "2592000"],
+    ])
+    return res is not None
+
+
+async def _get_intent_list(key_prefix: str, chat_id: int, limit: int) -> list[dict]:
+    key = f"{key_prefix}:{chat_id}"
+    res = await _kv_request(["LRANGE", key, str(-abs(limit)), "-1"])
+    entries: list[dict] = []
+    if res and isinstance(res.get("result"), list):
+        for raw in res["result"]:
+            try:
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(data, dict):
+                    entries.append(data)
+            except (json.JSONDecodeError, TypeError):
+                continue
+    return entries
+
+
+async def get_intent_log(chat_id: int, limit: int = 20) -> list[dict]:
+    """Mengambil audit keputusan intent terbaru."""
+    return await _get_intent_list(INTENT_LOG_PREFIX, chat_id, limit)
+
+
+async def get_intent_feedback(chat_id: int, limit: int = 20) -> list[dict]:
+    """Mengambil feedback false-positive intent terbaru."""
+    return await _get_intent_list(INTENT_FEEDBACK_PREFIX, chat_id, limit)
 
 
 # --- Conversation History Functions ---

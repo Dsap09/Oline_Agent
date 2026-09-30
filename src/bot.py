@@ -261,6 +261,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _handle_memory_callback(query, chat_id, data[4:].strip())
         return
 
+    # Tombol konfirmasi intent (classifier confidence rendah)
+    if data.startswith("intent:"):
+        await _handle_intent_callback(query, chat_id, data[7:].strip())
+        return
+
     if not data.startswith("cmd:"):
         return
     cmd = data[4:].strip()
@@ -1284,15 +1289,71 @@ def detect_intent(text: str) -> str | None:
     return None
 
 
+# Sentinel: classifier minta konfirmasi user sebelum eksekusi (confidence rendah).
+INTENT_CLARIFY_SENTINEL = "__intent_clarify__"
+
+
+async def resolve_intent_decision(text: str, chat_id: int | None) -> dict:
+    """
+    Keputusan intent lengkap (hybrid context-aware):
+    - chat_id None -> perilaku keyword lama (back-compat/test).
+    - Ada chat_id -> src.intent_classifier.resolve_intent (keyword + LLM gate).
+    Returns dict {mode, intent, source, confidence, question, allow_grounding}.
+    """
+    keyword_intent = detect_intent(text)
+    if chat_id is None:
+        return {
+            "mode": "action" if keyword_intent else "chat",
+            "intent": keyword_intent,
+            "source": "keyword",
+            "confidence": 0.0,
+            "question": "",
+            "allow_grounding": True,
+        }
+
+    try:
+        from src.intent_classifier import resolve_intent
+        decision = await resolve_intent(text, int(chat_id), keyword_intent)
+    except Exception as e:
+        logger.warning("Intent classifier gagal, fallback keyword: %s", str(e))
+        return {
+            "mode": "action" if keyword_intent else "chat",
+            "intent": keyword_intent,
+            "source": "fallback",
+            "confidence": 0.0,
+            "question": "",
+            "allow_grounding": True,
+        }
+
+    # Grounding fast-path dilewati HANYA bila classifier eksplisit memutuskan "chat"
+    # (komentar/cerita/pertanyaan meta). Pesan tanpa keyword tetap dapat grounding
+    # faktual seperti biasa agar pertanyaan live tetap terjawab akurat.
+    decision["allow_grounding"] = not (
+        decision.get("source") == "classifier" and decision.get("mode") == "chat"
+    )
+    return decision
+
+
 async def detect_intent_async(text: str, chat_id: int | None = None) -> str | None:
     """
-    Mendeteksi intent berdasarkan kata kunci pesan SAAT INI saja.
-    TIDAK lagi me-routing pesan pendek ke intent dari riwayat lama, karena itu
-    menyebabkan false-positive (mis. user tidak menyebut saham, tapi pesan pendeknya
-    tetap dianggap saham karena riwayat lama pernah membahas saham). Kelanjutan
-    percakapan (mis. jawaban "surabaya") tetap ditangani model lewat history di prompt.
+    Mendeteksi intent dengan hybrid context-aware:
+    - Tanpa keyword -> fast path (None) tanpa panggilan LLM.
+    - Keyword + perintah jelas -> langsung intent (tanpa LLM).
+    - Keyword ambigu (komentar/cerita/meta) -> LLM gate (chat vs action + confidence).
+    - Confidence rendah -> sentinel INTENT_CLARIFY_SENTINEL (handle_message mengirim tombol).
+    chat_id=None memakai perilaku keyword lama (back-compat untuk test).
     """
-    return detect_intent(text)
+    decision = await resolve_intent_decision(text, chat_id)
+    if decision.get("mode") == "clarify":
+        from src.kv import save_intent_clarify
+        await save_intent_clarify(
+            chat_id,
+            text,
+            decision.get("intent") or "",
+            decision.get("question") or "",
+        )
+        return INTENT_CLARIFY_SENTINEL
+    return decision.get("intent")
 
 
 RULE_KEYWORDS = [
@@ -1825,6 +1886,225 @@ async def _handle_coding_result_callback(query, chat_id: int, action: str) -> No
         return
 
 
+async def _route_by_intent(
+    destination,
+    chat_id: int,
+    user_message: str,
+    intent: Optional[str],
+    user_name: str,
+    allow_grounding: bool = True,
+) -> None:
+    """
+    Routing & eksekusi berdasarkan intent (dipakai handle_message dan tombol
+    konfirmasi intent). `destination` adalah objek Chat (punya send_message/send_action).
+    """
+    # --- Feature Flag Check Sebelum Dipakai (brief.md) ---
+    if intent is not None and intent not in ("health", "kelola_fitur"):
+        intent_to_feature = {
+            "saham": "saham",
+            "cuaca": "cuaca",
+            "gambar": "vision",
+            "vision": "vision",
+            "preview": "landing_page",
+            "deploy": "deploy",
+            "notion": "notion",
+            "drive": "drive",
+            "calendar": "calendar",
+            "search": "search",
+            "suara": "suara",
+            "jurnal": "jurnal",
+            "neo4j": "neo4j",
+            "coding": "coding",
+            "akademik": "akademik",
+            "cek_token": "cek_token",
+            "renew_token": "renew_token",
+            "coding_agent": "coding_agent",
+        }
+        feat_name = intent_to_feature.get(intent, intent)
+        from src.kv import is_feature_active
+        if not await is_feature_active(feat_name):
+            await destination.send_message(
+                f"Fitur {feat_name} sedang dinonaktifkan. Mau diaktifkan lagi?"
+            )
+            return
+
+    # --- Notion: pastikan simpan catatan BENAR-BENAR memanggil tool & terverifikasi (anti mengarang) ---
+    # Simpan catatan dieksekusi langsung, bukan diserahkan ke keputusan model yang bisa mengarang.
+    if intent == "notion":
+        extracted = _extract_notion_note(user_message)
+        if extracted:
+            title, content = extracted
+            from src.notion import save_note_to_notion
+            result = await save_note_to_notion(title=title, content=content)
+            ok = result.get("status") == "success"
+            logger.info(
+                "Notion note-save (imperatif): title=%r status=%s",
+                title, "success" if ok else result.get("error"),
+            )
+            if ok:
+                await destination.send_message(
+                    f"✅ Catatan '{result.get('title')}' berhasil disimpan ke Notion."
+                )
+            else:
+                await destination.send_message(
+                    f"❌ Gagal menyimpan catatan ke Notion: {result.get('error')}"
+                )
+            return
+
+    # --- Kuota AI: jalankan langsung (anti model menjawab generik tanpa list) ---
+    # Kuota dieksekusi imperatif agar SELALU menampilkan rincian list model AI,
+    # tidak diserahkan ke keputusan model yang bisa meringkas menjadi satu baris.
+    if intent == "kuota":
+        try:
+            from src.tools import check_ai_quota
+            from src.kv import save_history
+            report = await check_ai_quota(chat_id)
+            await destination.send_message(report)
+            try:
+                history = await get_history(chat_id)
+                history.append({"role": "user", "text": user_message})
+                history.append({"role": "model", "text": report})
+                await save_history(chat_id, history)
+            except Exception as hist_err:
+                logger.warning("Gagal simpan history kuota: %s", str(hist_err))
+            return
+        except Exception as quota_err:
+            logger.error("Gagal eksekusi kuota imperatif: %s", str(quota_err))
+
+    # --- Coding Agent: buat plan dulu, minta approval user via tombol (Plan dulu, eksekusi belakangan) ---
+    if intent == "coding_agent":
+        await _start_coding_agent_flow(destination, chat_id, user_message)
+        return
+
+    # --- Async Landing Page Path (Anti Gantung & Notifikasi Progres Satu Pesan) ---
+    if is_landing_page_generation_request(user_message, intent):
+        await _route_heavy_task(
+            destination,
+            chat_id,
+            user_message,
+            intent,
+            user_name,
+            "⏳ Permintaan diterima, mulai memproses...",
+        )
+        return
+
+    # --- Tool intent lainnya: delegasi ke worker Render (hangat) agar bebas cold start Vercel ---
+    # Tetap diproses sinkron di Vercel: perintah imperatif cepat (health, kelola_fitur,
+    # cek/renew token) dan list/delete deployment.
+    _quick_local = intent in ("health", "kelola_fitur", "cek_token", "renew_token")
+    _deploy_list_delete = intent == "deploy" and not is_landing_page_generation_request(user_message, intent)
+    if intent in HEAVY_BACKGROUND_INTENTS and not _quick_local and not _deploy_list_delete:
+        await _route_heavy_task(
+            destination,
+            chat_id,
+            user_message,
+            intent,
+            user_name,
+            "⏳ Baik, permintaan kamu sedang diproses. Aku kabari setelah selesai ya.",
+        )
+        return
+
+    # Kirim "typing" action HANYA untuk Slow Path (fitur berat) untuk memangkas latensi Fast Path
+    if intent is not None and hasattr(destination, "send_action"):
+        await destination.send_action("typing")
+
+    # Proses lewat pipeline AI
+    response = await chat_with_oline(
+        chat_id,
+        user_message,
+        user_name=user_name,
+        intent=intent,
+        allow_grounding=allow_grounding,
+    )
+
+    # Otomatis panggil self_monitor & health monitoring untuk slow path (fitur berat) per brief.md
+    if intent is not None:
+        try:
+            from src.self_monitor import self_monitor
+            asyncio.create_task(self_monitor(chat_id))
+        except Exception as sm_err:
+            logger.warning("Failed to trigger self_monitor: %s", str(sm_err))
+
+        try:
+            from src.health_check import run_monitoring_and_notify
+            asyncio.create_task(run_monitoring_and_notify(chat_id))
+        except Exception as hc_err:
+            logger.warning("Failed to trigger health monitoring: %s", str(hc_err))
+
+    # Kirim respons (split jika terlalu panjang)
+    from src.utils import clean_tool_call_text
+    response = clean_tool_call_text(response)
+    logger.info("[SEND] chat_id=%s, intent=%s, resp_len=%s, resp_head=%r",
+                chat_id, intent, len(response), response[:60])
+    if len(response) > 4096:
+        # Telegram max 4096 chars per pesan
+        for i in range(0, len(response), 4096):
+            chunk = response[i : i + 4096]
+            await destination.send_message(chunk)
+    else:
+        await destination.send_message(response)
+
+    # Auto-save memori proaktif (setelah balasan terkirim; best-effort, tidak memblokir UX)
+    try:
+        from src.memory import maybe_autosave
+        await maybe_autosave(chat_id, user_message, response, user_name)
+    except Exception as mem_err:
+        logger.warning("Auto-save memori gagal: %s", str(mem_err))
+
+
+async def _handle_intent_callback(query, chat_id: int, action: str) -> None:
+    """Menangani tombol konfirmasi intent (classifier confidence rendah)."""
+    from src.kv import (
+        clear_intent_clarify,
+        get_intent_clarify,
+        log_intent_decision,
+        log_intent_feedback,
+    )
+
+    action = (action or "").strip().lower()
+    state = await get_intent_clarify(chat_id)
+    if not state:
+        await query.message.reply_text(
+            "Konfirmasi sudah kedaluwarsa. Kirim ulang pesanmu ya."
+        )
+        return
+
+    perintah = state.get("perintah_asli") or ""
+    intent = state.get("intent") or ""
+    await clear_intent_clarify(chat_id)
+
+    user_name = "Teman"
+    if query.from_user and getattr(query.from_user, "first_name", None):
+        user_name = query.from_user.first_name
+
+    if action == "yes":
+        await log_intent_decision(chat_id, perintah, "action", intent, 1.0, "confirmed")
+        try:
+            await query.message.edit_text("✅ Oke, aku proses ya...")
+        except Exception:
+            pass
+        await _route_by_intent(
+            query.message.chat,
+            chat_id,
+            perintah,
+            intent or None,
+            user_name,
+            allow_grounding=True,
+        )
+        return
+
+    # action == "no": user bilang bukan -> catat feedback false-positive.
+    await log_intent_feedback(chat_id, perintah, intent, "bukan")
+    try:
+        await query.message.edit_text(
+            "Oke, aku anggap obrolan biasa ya. Kalau butuh sesuatu, bilang saja 😊"
+        )
+    except Exception:
+        await query.message.reply_text(
+            "Oke, aku anggap obrolan biasa ya. Kalau butuh sesuatu, bilang saja 😊"
+        )
+
+
 async def handle_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -1971,160 +2251,36 @@ async def handle_message(
             await update.effective_chat.send_message(target_question)
             return
 
-    # Deteksi intent untuk menentukan Fast Path / Slow Path (dengan dukungan konteks percakapan)
-    intent = await detect_intent_async(user_message, chat_id)
+    # Deteksi intent context-aware (hybrid keyword + LLM gate).
+    decision = await resolve_intent_decision(user_message, chat_id)
 
-    # --- Feature Flag Check Sebelum Dipakai (brief.md) ---
-    if intent is not None and intent not in ("health", "kelola_fitur"):
-        intent_to_feature = {
-            "saham": "saham",
-            "cuaca": "cuaca",
-            "gambar": "vision",
-            "vision": "vision",
-            "preview": "landing_page",
-            "deploy": "deploy",
-            "notion": "notion",
-            "drive": "drive",
-            "calendar": "calendar",
-            "search": "search",
-            "suara": "suara",
-            "jurnal": "jurnal",
-            "neo4j": "neo4j",
-            "coding": "coding",
-            "akademik": "akademik",
-            "cek_token": "cek_token",
-            "renew_token": "renew_token",
-            "coding_agent": "coding_agent",
-        }
-        feat_name = intent_to_feature.get(intent, intent)
-        from src.kv import is_feature_active
-        if not await is_feature_active(feat_name):
-            await update.effective_chat.send_message(
-                f"Fitur {feat_name} sedang dinonaktifkan. Mau diaktifkan lagi?"
-            )
-            return
-
-    # --- Notion: pastikan simpan catatan BENAR-BENAR memanggil tool & terverifikasi (anti mengarang) ---
-    # Simpan catatan dieksekusi langsung, bukan diserahkan ke keputusan model yang bisa mengarang.
-    if intent == "notion":
-        extracted = _extract_notion_note(user_message)
-        if extracted:
-            title, content = extracted
-            from src.notion import save_note_to_notion
-            result = await save_note_to_notion(title=title, content=content)
-            ok = result.get("status") == "success"
-            logger.info(
-                "Notion note-save (imperatif): title=%r status=%s",
-                title, "success" if ok else result.get("error"),
-            )
-            if ok:
-                await update.effective_chat.send_message(
-                    f"✅ Catatan '{result.get('title')}' berhasil disimpan ke Notion."
-                )
-            else:
-                await update.effective_chat.send_message(
-                    f"❌ Gagal menyimpan catatan ke Notion: {result.get('error')}"
-                )
-            return
-
-    # --- Kuota AI: jalankan langsung (anti model menjawab generik tanpa list) ---
-    # Kuota dieksekusi imperatif agar SELALU menampilkan rincian list model AI,
-    # tidak diserahkan ke keputusan model yang bisa meringkas menjadi satu baris.
-    if intent == "kuota":
-        try:
-            from src.tools import check_ai_quota
-            from src.kv import save_history
-            report = await check_ai_quota(chat_id)
-            await update.effective_chat.send_message(report)
-            try:
-                history = await get_history(chat_id)
-                history.append({"role": "user", "text": user_message})
-                history.append({"role": "model", "text": report})
-                await save_history(chat_id, history)
-            except Exception as hist_err:
-                logger.warning("Gagal simpan history kuota: %s", str(hist_err))
-            return
-        except Exception as quota_err:
-            logger.error("Gagal eksekusi kuota imperatif: %s", str(quota_err))
-
-    # --- Coding Agent: buat plan dulu, minta approval user via tombol (Plan dulu, eksekusi belakangan) ---
-    if intent == "coding_agent":
-        await _start_coding_agent_flow(update.effective_chat, chat_id, user_message)
-        return
-
-    # --- Async Landing Page Path (Anti Gantung & Notifikasi Progres Satu Pesan) ---
-    if is_landing_page_generation_request(user_message, intent):
-        await _route_heavy_task(
-            update.effective_chat,
+    if decision.get("mode") == "clarify":
+        from src.kv import save_intent_clarify
+        await save_intent_clarify(
             chat_id,
             user_message,
-            intent,
-            user_name,
-            "⏳ Permintaan diterima, mulai memproses...",
+            decision.get("intent") or "",
+            decision.get("question") or "",
+        )
+        await update.effective_chat.send_message(
+            decision.get("question") or "Sepertinya kamu mau sesuatu. Betul?",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Ya", callback_data="intent:yes"),
+                    InlineKeyboardButton("❌ Bukan", callback_data="intent:no"),
+                ],
+            ]),
         )
         return
 
-    # --- Tool intent lainnya: delegasi ke worker Render (hangat) agar bebas cold start Vercel ---
-    # Tetap diproses sinkron di Vercel: perintah imperatif cepat (health, kelola_fitur,
-    # cek/renew token) dan list/delete deployment.
-    _quick_local = intent in ("health", "kelola_fitur", "cek_token", "renew_token")
-    _deploy_list_delete = intent == "deploy" and not is_landing_page_generation_request(user_message, intent)
-    if intent in HEAVY_BACKGROUND_INTENTS and not _quick_local and not _deploy_list_delete:
-        await _route_heavy_task(
-            update.effective_chat,
-            chat_id,
-            user_message,
-            intent,
-            user_name,
-            "⏳ Baik, permintaan kamu sedang diproses. Aku kabari setelah selesai ya.",
-        )
-        return
-
-    # Kirim "typing" action HANYA untuk Slow Path (fitur berat) untuk memangkas latensi Fast Path
-    if intent is not None:
-        await update.effective_chat.send_action("typing")
-
-    # Proses lewat pipeline AI
-    response = await chat_with_oline(
+    await _route_by_intent(
+        update.effective_chat,
         chat_id,
         user_message,
-        user_name=user_name,
-        intent=intent,
+        decision.get("intent"),
+        user_name,
+        allow_grounding=bool(decision.get("allow_grounding", True)),
     )
-
-    # Otomatis panggil self_monitor & health monitoring untuk slow path (fitur berat) per brief.md
-    if intent is not None:
-        try:
-            from src.self_monitor import self_monitor
-            asyncio.create_task(self_monitor(chat_id))
-        except Exception as sm_err:
-            logger.warning("Failed to trigger self_monitor: %s", str(sm_err))
-
-        try:
-            from src.health_check import run_monitoring_and_notify
-            asyncio.create_task(run_monitoring_and_notify(chat_id))
-        except Exception as hc_err:
-            logger.warning("Failed to trigger health monitoring: %s", str(hc_err))
-
-    # Kirim respons (split jika terlalu panjang)
-    from src.utils import clean_tool_call_text
-    response = clean_tool_call_text(response)
-    logger.info("[SEND] chat_id=%s, intent=%s, resp_len=%s, resp_head=%r",
-                chat_id, intent, len(response), response[:60])
-    if len(response) > 4096:
-        # Telegram max 4096 chars per pesan
-        for i in range(0, len(response), 4096):
-            chunk = response[i : i + 4096]
-            await update.effective_chat.send_message(chunk)
-    else:
-        await update.effective_chat.send_message(response)
-
-    # Auto-save memori proaktif (setelah balasan terkirim; best-effort, tidak memblokir UX)
-    try:
-        from src.memory import maybe_autosave
-        await maybe_autosave(chat_id, user_message, response, user_name)
-    except Exception as mem_err:
-        logger.warning("Auto-save memori gagal: %s", str(mem_err))
 
 
 async def download_telegram_file_with_retry(

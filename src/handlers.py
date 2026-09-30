@@ -649,6 +649,7 @@ async def call_model_with_fallback(
     chat_id: int = 0,
     intent: Optional[str] = None,
     model_preference: str = "auto",
+    allow_grounding: bool = True,
 ) -> str:
     """
     Eksekusi alur pemanggilan model AI dengan urutan fallback optimal per jalur:
@@ -662,6 +663,8 @@ async def call_model_with_fallback(
 
     Sebelum model menjawab, gate grounding memastikan data nyata (dari tool wajib intent)
     tersedia di konteks; jika tidak, Oline jujur menyatakan data tak tersedia / minta info.
+    allow_grounding=False men-skip gate ini (dipakai saat classifier memutuskan pesan
+    hanya obrolan biasa, mis. komentar "cuaca hari ini panas ya").
     """
     if jalur == "fast":
         order = ["groq", "gemini", "openrouter", "deepseek"]
@@ -673,23 +676,24 @@ async def call_model_with_fallback(
         order = ["groq", "gemini", "openrouter"]
 
     # --- Grounding wajib: ambil data nyata sebelum model menjawab (anti-halu) ---
-    try:
-        from src.grounding import (
-            GROUNDED, NEED_INFO, SKIP, UNAVAILABLE,
-            build_grounding_augment, prepare_grounding,
-        )
-        g_status, g_tool, g_result, g_msg = await prepare_grounding(chat_id, intent, user_message)
-        if g_status == NEED_INFO and g_msg:
-            return f"Biar aku kasih data yang akurat, aku butuh info dulu nih: {g_msg}"
-        if g_status == UNAVAILABLE and g_msg:
-            return (
-                f"Hmm, aku belum bisa dapat data akuratnya nih ({g_msg}). "
-                "Jadi aku nggak mau asal nebak. Coba lagi nanti ya."
+    if allow_grounding:
+        try:
+            from src.grounding import (
+                GROUNDED, NEED_INFO, SKIP, UNAVAILABLE,
+                build_grounding_augment, prepare_grounding,
             )
-        if g_status == GROUNDED and g_tool:
-            system_prompt = f"{system_prompt}\n{build_grounding_augment(g_tool, g_result)}"
-    except Exception as g_err:
-        logger.warning("Grounding prepare gagal (lanjut tanpa grounding): %s", str(g_err))
+            g_status, g_tool, g_result, g_msg = await prepare_grounding(chat_id, intent, user_message)
+            if g_status == NEED_INFO and g_msg:
+                return f"Biar aku kasih data yang akurat, aku butuh info dulu nih: {g_msg}"
+            if g_status == UNAVAILABLE and g_msg:
+                return (
+                    f"Hmm, aku belum bisa dapat data akuratnya nih ({g_msg}). "
+                    "Jadi aku nggak mau asal nebak. Coba lagi nanti ya."
+                )
+            if g_status == GROUNDED and g_tool:
+                system_prompt = f"{system_prompt}\n{build_grounding_augment(g_tool, g_result)}"
+        except Exception as g_err:
+            logger.warning("Grounding prepare gagal (lanjut tanpa grounding): %s", str(g_err))
 
     # --- Model manual pilihan user (command /models): paksa pakai model itu ---
     pref = (model_preference or "auto").strip()

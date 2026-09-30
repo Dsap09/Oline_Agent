@@ -616,6 +616,7 @@ async def chat_with_oline(
     intent: Optional[str] = None,
     is_retry: bool = False,
     use_gemini_only: bool = False,
+    allow_grounding: bool = True,
 ) -> str:
     """
     Main function untuk chat dengan Oline.
@@ -623,6 +624,8 @@ async def chat_with_oline(
     Intent preview/deploy diarahkan ke DeepInfra (DeepSeek V4 Flash) dengan fallback ke Gemini.
     Preferensi model manual user (command /models) dipaksa sebagai satu-satunya model;
     bila model manual limit/error, otomatis kembali ke rotasi 'auto'.
+    allow_grounding=False menonaktifkan grounding fast-path (dipakai saat classifier
+    memutuskan pesan hanya obrolan biasa, bukan permintaan data).
     """
     try:
         # Cek apakah pengguna meminta ringkasan percakapan harian
@@ -676,6 +679,7 @@ async def chat_with_oline(
                 chat_id=chat_id,
                 intent=intent,
                 model_preference=model_preference,
+                allow_grounding=allow_grounding,
             )
             if fallback_response and "Semua model AI sedang error" not in fallback_response:
                 fallback_response = clean_tool_calls(fallback_response)
