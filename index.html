@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Glow Up Cosmetics</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;1,600&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>*{margin:0;padding:0;box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+body{font-family:'Manrope',sans-serif;color:#4a2c3a;background:#fff5f8;line-height:1.6;}
+
+.container{max-width:1150px;margin:0 auto;padding:0 24px;}
+
+.badge{display:inline-block;background:#ffe1ec;color:#d6336c;padding:6px 16px;border-radius:30px;font-size:13px;font-weight:600;letter-spacing:.5px;}
+
+.btn{display:inline-block;background:linear-gradient(135deg,#ff5e9c,#d6336c);color:#fff;padding:14px 32px;border-radius:40px;text-decoration:none;font-weight:700;border:none;cursor:pointer;font-size:15px;transition:.3s;box-shadow:0 8px 20px rgba(214,51,108,.25);}
+.btn:hover{transform:translateY(-3px);box-shadow:0 12px 26px rgba(214,51,108,.35);}
+.btn-ghost{background:transparent;color:#d6336c;border:2px solid #ffb6d0;}
+.btn-ghost:hover{background:#ffe1ec;}
+.btn-small{padding:10px 24px;font-size:14px;}
+
+/* Navbar */
+.navbar{position:sticky;top:0;z-index:100;background:rgba(255,245,248,.92);backdrop-filter:blur(10px);border-bottom:1px solid #ffe1ec;}
+.nav-inner{display:flex;align-items:center;justify-content:space-between;padding:18px 24px;}
+.logo{font-family:'Playfair Display',serif;font-size:26px;font-weight:600;color:#d6336c;text-decoration:none;}
+.logo span{color:#ff8ab8;}
+nav a{color:#4a2c3a;text-decoration:none;margin-left:28px;font-weight:600;font-size:15px;}
+nav a:hover{color:#d6336c;}
+
+/* Hero */
+.hero{padding:80px 0 90px;background:radial-gradient(circle at 80% 20%,#ffe1ec 0%,#fff5f8 45%);}
+.hero-inner{display:grid;grid-template-columns:1.1fr .9fr;gap:50px;align-items:center;}
+.hero h1{font-size:54px;line-height:1.1;color:#3a1f2e;margin:18px 0;}
+.hero h1 em{font-family:'Playfair Display',serif;color:#d6336c;}
+.hero-text p{font-size:17px;max-width:460px;margin-bottom:28px;color:#7a5a6a;}
+.hero-cta{display:flex;gap:16px;margin-bottom:40px;}
+.hero-stats{display:flex;gap:40px;}
+.hero-stats strong{font-size:26px;color:#d6336c;display:block;}
+.hero-stats span{font-size:13px;color:#7a5a6a;}
+.hero-img{position:relative;}
+.hero-img img{width:100%;border-radius:24px;box-shadow:0 25px 50px rgba(214,51,108,.2);}
+.float-card{position:absolute;bottom:24px;left:-20px;background:#fff;padding:12px 20px;border-radius:16px;font-weight:700;color:#d6336c;box-shadow:0 10px 25px rgba(0,0,0,.1);}
+
+/* Section Head */
+.section-head{text-align:center;margin-bottom:48px;}
+.section-head h2{font-size:38px;color:#3a1f2e;margin:12px 0 8px;font-family:'Playfair Display',serif;}
+.section-head p{color:#7a5a6a;}
+
+/* Produk */
+.produk{padding:80px 0;}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;}
+.card{background:#fff;border-radius:20px;padding:20px;text-align:center;box-shadow:0 6px 20px rgba(214,51,108,.08);transition:.3s;}
+.card:hover{transform:translateY(-6px);box-shadow:0 14px 30px rgba(214,51,108,.18);}
+.card img{width:100%;height:240px;object-fit:cover;border-radius:14px;margin-bottom:16px;}
+.card h3{color:#3a1f2e;font-size:19px;margin-bottom:6px;}
+.card p{color:#7a5a6a;font-size:14px;margin-bottom:12px;}
+.price{display:block;color:#d6336c;font-weight:700;font-size:18px;margin-bottom:14px;}
+
+/* Keunggulan */
+.keunggulan{padding:80px 0;background:#ffe1ec;}
+.feature-row{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;text-align:center;}
+.feature{background:#fff;padding:36px 24px;border-radius:20px;}
+.feature .icon{font-size:40px;display:block;margin-bottom:14px;}
+.feature h3{color:#3a1f2e;margin-bottom:8px;}
+.feature p{color:#7a5a6a;font-size:15px;}
+
+/* Testimoni */
+.testimoni{padding:80px 0;}
+.testi{background:#fff;border-radius:20px;padding:26px;box-shadow:0 6px 20px rgba(214,51,108,.08);}
+.testi p{font-size:15px;margin-bottom:14px;color:#4a2c3a;}
+.testi span{color:#d6336c;font-weight:600;font-size:14px;}
+
+/* CTA */
+.cta{padding:40px 0 80px;}
+.cta-box{background:linear-gradient(135deg,#ff5e9c,#d6336c);border-radius:28px;padding:56px;text-align:center;color:#fff;}
+.cta-box h2{font-size:36px;font-family:'Playfair Display',serif;margin-bottom:12px;}
+.cta-box p{font-size:16px;margin-bottom:26px;}
+.cta-box form{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;}
+.cta-box input{padding:14px 18px;border-radius:40px;border:none;font-size:15px;width:240px;outline:none;}
+.cta-box .btn{background:#fff;color:#d6336c;}
+.form-note{margin-top:18px;font-size:14px;}
+
+/* Footer */
+footer{background:#3a1f2e;color:#ffd6e6;padding:36px 0;}
+.footer-inner{display:flex;align-items:center;justify-content:space-between;}
+.footer-inner .logo{color:#ff8ab8;}
+footer p{font-size:14px;}
+.social{font-size:15px;}
+
+@media(max-width:800px){
+  nav{display:none;}
+  .hero-inner{grid-template-columns:1fr;text-align:center;}
+  .hero-text p{margin:0 auto 28px;}
+  .hero-cta,.hero-stats{justify-content:center;}
+  .grid,.feature-row{grid-template-columns:1fr;}
+  .hero h1{font-size:40px;}
+  .cta-box{padding:36px 24px;}
+  .cta-box input{width:100%;}
+}</style></head>
+<body>
+  <header class="navbar">
+    <div class="container nav-inner">
+      <a href="#" class="logo">GLOW<span>UP</span></a>
+      <nav>
+        <a href="#beranda">Beranda</a>
+        <a href="#produk">Produk</a>
+        <a href="#keunggulan">Keunggulan</a>
+        <a href="#testimoni">Testimoni</a>
+      </nav>
+      <a href="#cta" class="btn btn-small">Belanja Sekarang</a>
+    </div>
+  </header>
+
+  <section class="hero" id="beranda">
+    <div class="container hero-inner">
+      <div class="hero-text">
+        <span class="badge">✨ New Collection 2026</span>
+        <h1>Bersinar Cantik,<br><em>Sepercik</em> Percaya Diri</h1>
+        <p>Temukan rangkaian kosmetik vegan & cruelty-free yang dirancang untuk mempercantik warna kulit aslimu. Formula lembut, hasil flawless.</p>
+        <div class="hero-cta">
+          <a href="#produk" class="btn">Lihat Koleksi</a>
+          <a href="#cta" class="btn btn-ghost">Jadi Member</a>
+        </div>
+        <div class="hero-stats">
+          <div><strong>50K+</strong><span>Pelanggan Puas</span></div>
+          <div><strong>120+</strong><span>Produk Pilihan</span></div>
+          <div><strong>4.9</strong><span>Rating Toko</span></div>
+        </div>
+      </div>
+      <div class="hero-img">
+        <img src="https://images.unsplash.com/photo-1596462502278-27bfdc403348?auto=format&fit=crop&w=900&q=80" alt="Kosmetik pink">
+        <div class="float-card">🌸 100% Vegan</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="produk" id="produk">
+    <div class="container">
+      <div class="section-head">
+        <span class="badge">Best Seller</span>
+        <h2>Favorit Para Glow Lovers</h2>
+        <p>Pilihan produk terlaris yang wajib ada di tas kecantikanmu.</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <img src="https://images.unsplash.com/photo-1512496015851-a90fb38ba796?auto=format&fit=crop&w=600&q=80" alt="Lipstik">
+          <h3>Velvet Matte Lipstick</h3>
+          <p>Warna tahan lama, tekstur lembut.</p>
+          <span class="price">Rp 89.000</span>
+          <a href="#" class="btn btn-small">Tambah ke Tas</a>
+        </div>
+        <div class="card">
+          <img src="https://images.unsplash.com/photo-1571781926291-c477ebfd024b?auto=format&fit=crop&w=600&q=80" alt="Foundation">
+          <h3>Dewy Glow Foundation</h3>
+          <p>Coverage sempurna, hasil natural.</p>
+          <span class="price">Rp 135.000</span>
+          <a href="#" class="btn btn-small">Tambah ke Tas</a>
+        </div>
+        <div class="card">
+          <img src="https://images.unsplash.com/photo-1522335789203-aabd1fc54bc9?auto=format&fit=crop&w=600&q=80" alt="Palet">
+          <h3>Rosy Eyeshadow Palette</h3>
+          <p>12 warna pigmen tinggi, minim fall out.</p>
+          <span class="price">Rp 159.000</span>
+          <a href="#" class="btn btn-small">Tambah ke Tas</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="keunggulan" id="keunggulan">
+    <div class="container">
+      <div class="section-head">
+        <span class="badge">Kenapa Glow Up?</span>
+        <h2>Kecantikan yang Peduli</h2>
+      </div>
+      <div class="feature-row">
+        <div class="feature">
+          <span class="icon">🌿</span>
+          <h3>Bahan Alami</h3>
+          <p>Formulasi dari ekstrak botanikal pilihan.</p>
+        </div>
+        <div class="feature">
+          <span class="icon">🐰</span>
+          <h3>Cruelty-Free</h3>
+          <p>Tanpa pengujian pada hewan, aman dipakai.</p>
+        </div>
+        <div class="feature">
+          <span class="icon">💖</span>
+          <h3>Untuk Semua</h3>
+          <p>Kulit terang hingga sawo matang, semua bersinar.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="testimoni" id="testimoni">
+    <div class="container">
+      <div class="section-head">
+        <span class="badge">Kata Mereka</span>
+        <h2>Cerita Glow Lovers</h2>
+      </div>
+      <div class="grid testi-grid">
+        <div class="testi">
+          <p>"Lipstiknya pigmented banget dan gak bikin kering. Jadi favoritku!"</p>
+          <span>🌸 Nadia, 22</span>
+        </div>
+        <div class="testi">
+          <p>"Foundationnya ringan, coverage pas, cocok buat daily makeup."</p>
+          <span>🌸 Sarah, 25</span>
+        </div>
+        <div class="testi">
+          <p>"Palet matanya cantik, warna rosy-nya gak bikin mata bengkak."</p>
+          <span>🌸 Putri, 20</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta" id="cta">
+    <div class="container cta-box">
+      <h2>Gabung Jadi Glow Lovers</h2>
+      <p>Dapatkan diskon 20% untuk pembelian pertamamu plus akses produk eksklusif.</p>
+      <form id="joinForm">
+        <input type="text" placeholder="Nama kamu" required>
+        <input type="email" placeholder="Email kamu" required>
+        <button type="submit" class="btn">Daftar Sekarang</button>
+      </form>
+      <p class="form-note">✨ Gratis ongkir untuk 100 pendaftar pertama bulan ini.</p>
+    </div>
+  </section>
+
+  <footer>
+    <div class="container footer-inner">
+      <a href="#" class="logo">GLOW<span>UP</span></a>
+      <p>© 2026 Glow Up Cosmetics. Semua hak dilindungi.</p>
+      <div class="social">🌸 Instagram &nbsp;|&nbsp; 💬 WhatsApp</div>
+    </div>
+  </footer>
+
+<script>
+  document.getElementById('joinForm').addEventListener('submit', function(e){
+    e.preventDefault();
+    alert('Terima kasih! Kamu sudah terdaftar sebagai Glow Lovers 💖');
+    this.reset();
+  });
+</script>
+</body>
+</html>
