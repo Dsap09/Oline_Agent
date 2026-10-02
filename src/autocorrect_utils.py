@@ -24,6 +24,8 @@ INDONESIAN_VOCABULARY = [
     "rekomendasi", "film", "lagu", "buku", "seri", "anime", "horor", "komedi", "aksi", "romantis",
     "suara", "nyanyi", "gombal", "puisi", "baca", "bacain", "dengar",
     "jurnal", "catat", "rekap", "catatan", "diary",
+    "pengeluaran", "belanja", "struk", "nota", "bon", "rupiah", "ribu", "juta",
+    "kopi", "makan", "bensin", "grab", "gojek", "warung", "indomaret", "alfamart",
     "kuota", "token", "quota", "sisa", "pemakaian",
     "eksekusi", "jalankan", "script", "python", "javascript", "coding", "debug", "kode",
     "notion", "vercel", "deploy", "onlinekan", "gambar", "foto", "image",

@@ -1,7 +1,7 @@
 """
 Tool definitions dan executor functions untuk Gemini Function Calling.
 Mencakup: rekomendasi film (TMDb), rekomendasi musik (iTunes),
-cuaca (OpenWeatherMap), dan jurnal harian (Vercel KV).
+cuaca (OpenWeatherMap), dan pengeluaran (Notion "Keuangan Oline").
 """
 
 import asyncio
@@ -20,12 +20,10 @@ import httpx
 from src.kv import (
     del_cache,
     get_cache,
-    get_journal_entries,
     get_monthly_tts_usage,
     get_today_groq_usage,
     get_today_usage,
     get_user_location,
-    save_journal,
     save_tts_usage,
     save_user_location,
     set_cache,
@@ -223,43 +221,58 @@ TOOL_DECLARATIONS = [
         },
     },
     {
-        "name": "save_journal_entry",
+        "name": "save_expense",
         "description": (
-            "Menyimpan catatan jurnal harian pengguna. Gunakan saat pengguna "
-            "ingin mencatat jurnal, diary, atau hal yang ingin diingat hari ini."
+            "Menyimpan catatan pengeluaran pengguna ke database Notion 'Keuangan Oline'. "
+            "Gunakan saat pengguna mencatat pengeluaran, belanja, atau pembayaran "
+            "(mis. 'kopi 25rb', 'beli bensin 50rb', 'bayar listrik 200rb')."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "text": {
+                "deskripsi": {
                     "type": "string",
-                    "description": "Isi catatan jurnal yang ingin disimpan.",
+                    "description": "Deskripsi singkat pengeluaran (mis. 'kopi', 'bensin', 'makan siang').",
                 },
-                "date": {
+                "nominal": {
+                    "type": "number",
+                    "description": "Nominal pengeluaran dalam Rupiah (angka bulat, mis. 25000).",
+                },
+                "kategori": {
                     "type": "string",
-                    "description": "Tanggal jurnal (format YYYY-MM-DD). Default hari ini jika tidak disebutkan.",
+                    "description": (
+                        "Kategori pengeluaran. Pilih salah satu: Makan & Minum, Transport, "
+                        "Belanja, Rumah, Kesehatan, Hiburan, Pendidikan, Lain-lain."
+                    ),
+                },
+                "tanggal": {
+                    "type": "string",
+                    "description": "Tanggal pengeluaran (YYYY-MM-DD). Default hari ini.",
+                },
+                "toko": {
+                    "type": "string",
+                    "description": "Nama toko/merchant (opsional, mis. 'Indomaret').",
+                },
+                "catatan": {
+                    "type": "string",
+                    "description": "Catatan tambahan atau daftar item (opsional).",
                 },
             },
-            "required": ["text"],
+            "required": ["deskripsi", "nominal"],
         },
     },
     {
-        "name": "get_journal_recap",
+        "name": "get_expense_recap",
         "description": (
-            "Mengambil rekap atau catatan jurnal sebelumnya. Gunakan saat "
-            "pengguna meminta rekap jurnal, melihat catatan sebelumnya, "
-            "atau bertanya apa yang ditulis pada tanggal tertentu."
+            "Mengambil rekap pengeluaran pengguna (total + breakdown kategori) dari Notion. "
+            "Gunakan saat pengguna bertanya rekap pengeluaran hari ini, minggu ini, atau bulan ini."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "start_date": {
+                "periode": {
                     "type": "string",
-                    "description": "Tanggal awal rentang (YYYY-MM-DD). Default 7 hari lalu.",
-                },
-                "end_date": {
-                    "type": "string",
-                    "description": "Tanggal akhir rentang (YYYY-MM-DD). Default hari ini.",
+                    "description": "Periode rekap: 'hari', 'minggu', atau 'bulan'. Default 'bulan'.",
                 },
             },
             "required": [],
@@ -888,7 +901,7 @@ TOOLS_BY_INTENT = {
     "cuaca": ["get_weather_forecast"],
     "rekomendasi": ["get_movie_recommendation", "get_music_recommendation"],
     "suara": ["send_voice_message"],
-    "jurnal": ["save_journal_entry", "get_journal_recap"],
+    "pengeluaran": ["save_expense", "get_expense_recap"],
     "kuota": ["check_ai_quota", "check_quota"],
     "health": ["check_feature_health"],
     "kelola_fitur": ["toggle_feature", "check_feature_health"],
@@ -1202,37 +1215,64 @@ async def get_weather_forecast(
         return {"error": f"Gagal mengakses OpenWeatherMap API: {str(e)}"}
 
 
-async def execute_save_journal(chat_id: int, text: str, date: Optional[str] = None) -> dict[str, Any]:
-    """Menyimpan entri jurnal harian ke Vercel KV."""
-    journal_date = date or datetime.now().strftime("%Y-%m-%d")
-    success = await save_journal(chat_id, text, journal_date)
+async def execute_save_expense(
+    chat_id: int,
+    deskripsi: str,
+    nominal: float,
+    kategori: Optional[str] = None,
+    tanggal: Optional[str] = None,
+    toko: str = "",
+    catatan: str = "",
+) -> dict[str, Any]:
+    """Menyimpan pengeluaran ke Notion (executor tool fallback function calling)."""
+    from src.expenses import categorize_expense
+    from src.notion import save_expense
 
-    if success:
+    if not deskripsi or not str(deskripsi).strip():
+        return {"error": "Deskripsi pengeluaran kosong."}
+
+    kategori_final = kategori or await categorize_expense(str(deskripsi))
+    res = await save_expense(
+        deskripsi=str(deskripsi).strip(),
+        nominal=nominal,
+        kategori=kategori_final,
+        tanggal=tanggal,
+        sumber="chat",
+        toko=toko or "",
+        catatan=catatan or "",
+    )
+    if isinstance(res, dict) and res.get("status") == "success":
         return {
             "status": "saved",
-            "date": format_date_indonesian(journal_date),
-            "message": "Jurnal berhasil disimpan.",
+            "deskripsi": res.get("deskripsi"),
+            "nominal": res.get("nominal"),
+            "kategori": res.get("kategori"),
+            "tanggal": res.get("tanggal"),
+            "message": "Pengeluaran berhasil disimpan.",
         }
-    else:
-        return {"error": "Gagal menyimpan jurnal. Coba lagi nanti ya."}
+    return res if isinstance(res, dict) else {"error": str(res)}
 
 
-async def execute_get_journal_recap(
+async def execute_get_expense_recap(
     chat_id: int,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
+    periode: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Mengambil rekap jurnal dari Vercel KV."""
-    entries = await get_journal_entries(chat_id, start_date, end_date)
+    """Mengambil rekap pengeluaran dari Notion (executor tool fallback)."""
+    from src.expenses import build_recap_text, parse_periode
+    from src.notion import query_expenses
 
+    start, end, label = parse_periode(periode or "bulan")
+    entries = await query_expenses(start_date=start, end_date=end)
     if not entries:
-        return {"message": "Belum ada catatan jurnal di rentang tanggal tersebut."}
+        return {"periode": label, "message": f"Belum ada pengeluaran {label.lower()}."}
 
-    formatted = {}
-    for date_key, text in entries.items():
-        formatted[format_date_indonesian(date_key)] = text
-
-    return {"entries": formatted, "total_entries": len(formatted)}
+    total = sum(int(e.get("nominal") or 0) for e in entries)
+    return {
+        "periode": label,
+        "total": total,
+        "jumlah_transaksi": len(entries),
+        "ringkasan": build_recap_text(entries, label),
+    }
 
 
 def hitung_sisa(provider: str, terpakai: Any) -> str:
@@ -3317,8 +3357,8 @@ TOOL_EXECUTORS = {
     "get_movie_recommendation": get_movie_recommendation,
     "get_music_recommendation": get_music_recommendation,
     "get_weather_forecast": get_weather_forecast,
-    "save_journal_entry": execute_save_journal,
-    "get_journal_recap": execute_get_journal_recap,
+    "save_expense": execute_save_expense,
+    "get_expense_recap": execute_get_expense_recap,
     "check_ai_quota": check_ai_quota,
     "check_quota": check_ai_quota,
     "check_feature_health": execute_check_feature_health,
@@ -3537,20 +3577,21 @@ async def execute_tool(
         except Exception as notif_err:
             logger.warning("Notification trigger failed in execute_tool: %s", str(notif_err))
 
-    if func_name in ("save_journal_entry", "get_journal_recap"):
-        args["chat_id"] = chat_id
-        if func_name == "save_journal_entry":
+    if func_name in ("save_expense", "get_expense_recap"):
+        if func_name == "save_expense":
             return await executor(
                 chat_id=chat_id,
-                text=args.get("text", ""),
-                date=args.get("date"),
+                deskripsi=args.get("deskripsi", ""),
+                nominal=args.get("nominal", 0),
+                kategori=args.get("kategori"),
+                tanggal=args.get("tanggal"),
+                toko=args.get("toko", ""),
+                catatan=args.get("catatan", ""),
             )
-        else:
-            return await executor(
-                chat_id=chat_id,
-                start_date=args.get("start_date"),
-                end_date=args.get("end_date"),
-            )
+        return await executor(
+            chat_id=chat_id,
+            periode=args.get("periode"),
+        )
     elif func_name in ("check_quota", "check_ai_quota"):
         return await check_ai_quota(chat_id=chat_id)
     elif func_name == "check_feature_health":

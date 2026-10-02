@@ -27,7 +27,6 @@ from src.kv import (
     clear_pending_task,
     get_history,
     get_pending_task,
-    save_journal,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,6 +81,7 @@ def create_application() -> Application:
     application.add_handler(CommandHandler("models", handle_models))
     application.add_handler(CommandHandler("memory", handle_memory))
     application.add_handler(CommandHandler("jurnal", handle_jurnal_command))
+    application.add_handler(CommandHandler("pengeluaran", handle_pengeluaran_command))
     application.add_handler(CommandHandler("set_token", handle_set_token))
     application.add_handler(
         MessageHandler(filters.LOCATION, handle_location_message)
@@ -110,7 +110,8 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "🎬 Rekomendasi film & musik\n"
         "🌤️ Informasi cuaca terkini\n"
         "📈 Cek saham & IHSG\n"
-        "📔 Catatan jurnal & memori\n"
+        "🧾 Catat pengeluaran & baca struk\n"
+        "📔 Catatan & memori\n"
         "🔍 Cari informasi di internet\n"
         "🌐 Preview & deploy landing page\n\n"
         "Ketik /help untuk melihat daftar semua perintah,\n"
@@ -143,7 +144,7 @@ COMMAND_HELP_DETAIL = {
     "persona": "Atur gaya komunikasi. Format: /persona <gaya>",
     "models": "Pilih model AI manual. Format: /models [info|status|reset|preset]",
     "memory": "Atur memori otomatis ke Notion. Format: /memory [on|off|list|delete|clear]",
-    "jurnal": "Simpan catatan jurnal. Format: /jurnal <teks>",
+    "pengeluaran": "Catat & rekap pengeluaran. Format: /pengeluaran [rekap|cari|hapus|config]",
     "set_token": "Simpan token layanan. Format: /set_token <layanan> <token>",
 }
 
@@ -164,7 +165,7 @@ COMMAND_HELP_TEXT = (
     "/kuota — cek kuota AI\n"
     "/list — daftar deployment Vercel\n"
     "/preview — daftar preview aktif\n"
-    "/jurnal <teks> — catat jurnal\n\n"
+    "/pengeluaran — catat & rekap pengeluaran\n\n"
 
     "Task Berat\n"
     "/landing <deskripsi> — buat landing page\n"
@@ -220,6 +221,7 @@ MENU_KEYBOARD = InlineKeyboardMarkup([
      InlineKeyboardButton("Fitur", callback_data="cmd:fitur")],
     [InlineKeyboardButton("Model AI", callback_data="cmd:models")],
     [InlineKeyboardButton("Memori", callback_data="cmd:memory")],
+    [InlineKeyboardButton("Pengeluaran", callback_data="cmd:pengeluaran")],
 ])
 
 
@@ -266,6 +268,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _handle_intent_callback(query, chat_id, data[7:].strip())
         return
 
+    # Tombol fitur pengeluaran (konfirmasi draft/struk, config, hapus)
+    if data.startswith("exp:"):
+        await _handle_expense_callback(query, chat_id, data[4:].strip())
+        return
+
     if not data.startswith("cmd:"):
         return
     cmd = data[4:].strip()
@@ -300,6 +307,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _do_models(chat_id, query.message)
     elif cmd == "memory":
         await _do_memory(chat_id, query.message)
+    elif cmd == "pengeluaran":
+        await query.message.reply_text(
+            "🧾 Fitur Pengeluaran\n\n"
+            "Catat langsung: ketik mis. `kopi 25rb` atau `beli bensin 50rb`.\n"
+            "Perintah: /pengeluaran [rekap|cari|hapus|config]\n"
+            "Scan struk: kirim foto dengan caption 'struk' atau lewat /pengeluaran config."
+        )
     elif cmd == "fitur":
         from src.tools import execute_check_feature_health
         await query.message.reply_text(await execute_check_feature_health())
@@ -1109,43 +1123,635 @@ async def handle_jurnal_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """
-    Handler untuk command /jurnal <teks>.
-    Shortcut langsung simpan jurnal tanpa lewat Gemini.
+    Handler command /jurnal (DEPRECATED).
+    Fitur jurnal diganti fitur pengeluaran; command dipertahankan sebagai alias
+    yang mengarahkan user, bukan untuk menyimpan catatan baru.
+    """
+    if not update.effective_chat or not update.message:
+        return
+
+    await update.effective_chat.send_message(
+        "Fitur jurnal sudah diganti jadi fitur pengeluaran. 🧾\n\n"
+        "Coba:\n"
+        "• Ketik langsung: kopi 25rb\n"
+        "• /pengeluaran rekap — rekap pengeluaran\n"
+        "• /pengeluaran config — pengaturan & scan struk\n"
+        "• Kirim foto struk dengan caption \"struk\""
+    )
+
+
+EXPENSE_USAGE_TEXT = (
+    "🧾 Fitur Pengeluaran\n\n"
+    "Catat (langsung ketik):\n"
+    "• kopi 25rb\n"
+    "• grab 15k\n"
+    "• beli bensin 50rb\n"
+    "• tadi makan siang 30rb\n\n"
+    "Perintah:\n"
+    "• /pengeluaran 25rb kopi — catat manual\n"
+    "• /pengeluaran rekap [hari|minggu|bulan]\n"
+    "• /pengeluaran cari <kata>\n"
+    "• /pengeluaran hapus <id>\n"
+    "• /pengeluaran config — pengaturan\n\n"
+    "Scan struk: kirim foto + caption \"struk\"."
+)
+
+
+def _expense_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Tombol konfirmasi draft pengeluaran (chat/struk)."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Simpan", callback_data="exp:save"),
+            InlineKeyboardButton("✏️ Edit", callback_data="exp:edit"),
+        ],
+        [InlineKeyboardButton("❌ Batal", callback_data="exp:cancel")],
+    ])
+
+
+async def _render_expense_config(
+    chat_id: int,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Susun teks + tombol pengaturan pengeluaran (command /pengeluaran config)."""
+    from src.expenses import get_expense_settings
+    from src.notion import check_expense_database
+
+    settings = await get_expense_settings(chat_id)
+    db = await check_expense_database()
+
+    if db.get("status") == "ok":
+        db_line = f"✅ {db.get('title', 'Keuangan Oline')} ({len(db.get('properties') or [])} properti)"
+    elif db.get("status") == "unconfigured":
+        db_line = "❌ Belum dikonfigurasi (set NOTION_EXPENSE_DATABASE_ID)"
+    elif db.get("status") == "not_shared":
+        db_line = "❌ Database belum dibagikan ke Integrasi Notion"
+    else:
+        db_line = f"❌ Error: {db.get('detail', 'tidak diketahui')}"
+
+    text = (
+        "⚙️ Pengaturan Pengeluaran\n\n"
+        f"Auto-save dari chat: {'✅ ON' if settings.get('autosave') else '❌ OFF'}\n"
+        f"Konfirmasi sebelum simpan: {'✅ ON' if settings.get('confirm') else '❌ OFF'}\n\n"
+        f"Database: {db_line}\n\n"
+        "Tekan tombol untuk mengubah pengaturan."
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            f"Auto-save chat: {'✅ ON' if settings.get('autosave') else '❌ OFF'}",
+            callback_data="exp:cfg:auto",
+        )],
+        [InlineKeyboardButton(
+            f"Konfirmasi: {'✅ ON' if settings.get('confirm') else '❌ OFF'}",
+            callback_data="exp:cfg:conf",
+        )],
+        [InlineKeyboardButton("🧾 Scan Struk", callback_data="exp:scan")],
+    ])
+    return text, keyboard
+
+
+async def handle_pengeluaran_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    Handler command /pengeluaran.
+    Tanpa argumen menampilkan panduan + pengaturan; dengan argumen diproses
+    imperatif (catat/rekap/cari/hapus/config).
     """
     if not update.effective_chat or not update.message:
         return
 
     chat_id = update.effective_chat.id
-
-    # Rate limiting
     if not await check_rate_limit(chat_id):
         await update.effective_chat.send_message(
             "Mohon tunggu sebentar sebelum mengirim pesan kembali."
         )
         return
-    # Ambil teks setelah /jurnal
-    text = ""
-    if update.message.text:
-        text = update.message.text.replace("/jurnal", "", 1).strip()
 
-    if not text:
-        await update.effective_chat.send_message(
-            "Silakan sertakan catatan jurnal setelah perintah /jurnal.\n"
-            "Contoh: `/jurnal Menghadiri rapat proyek dan menyelesaikan laporan.`"
+    args_text = " ".join(context.args or []).strip()
+    if not args_text:
+        await update.effective_chat.send_message(EXPENSE_USAGE_TEXT)
+        cfg_text, keyboard = await _render_expense_config(chat_id)
+        await update.effective_chat.send_message(cfg_text, reply_markup=keyboard)
+        return
+
+    await _dispatch_expense_command(update.effective_chat, chat_id, args_text)
+
+
+async def _handle_expense_intent(
+    destination, chat_id: int, user_message: str
+) -> None:
+    """Intercept intent pengeluaran dari chat (keyword terdeteksi)."""
+    await _dispatch_expense_command(destination, chat_id, user_message)
+
+
+async def _dispatch_expense_command(
+    destination, chat_id: int, text: str
+) -> None:
+    """Routing perintah pengeluaran: rekap/cari/hapus/config/catat."""
+    from src.expenses import (
+        build_recap_text,
+        build_search_text,
+        detect_expense_entry,
+        format_rupiah,
+        parse_periode,
+        resolve_expense_index,
+        save_expense_index,
+    )
+    from src.notion import query_expenses
+
+    low = (text or "").lower().strip()
+
+    if low in ("config", "pengaturan", "setting", "setelan"):
+        cfg_text, keyboard = await _render_expense_config(chat_id)
+        await destination.send_message(cfg_text, reply_markup=keyboard)
+        return
+
+    if "rekap" in low or low.startswith("laporan") or any(
+        kw in low for kw in ("berapa", "total", "ringkasan")
+    ):
+        start, end, label = parse_periode(low)
+        entries = await query_expenses(start_date=start, end_date=end)
+        await destination.send_message(build_recap_text(entries, label))
+        return
+
+    if low.startswith("cari") or low.startswith("search"):
+        keyword = re.sub(r"^(cari|search)\s+(pengeluaran\s+)?", "", low).strip()
+        if not keyword:
+            await destination.send_message(
+                "Mau cari apa? Contoh: /pengeluaran cari kopi"
+            )
+            return
+        entries = await query_expenses(keyword=keyword)
+        await save_expense_index(chat_id, entries)
+        await destination.send_message(build_search_text(entries, keyword))
+        return
+
+    if low.startswith(("hapus", "delete")):
+        parts = low.split()
+        if len(parts) < 2:
+            await destination.send_message(
+                "Format: /pengeluaran hapus <id>\n"
+                "Lihat ID lewat: /pengeluaran cari <kata>"
+            )
+            return
+        short_id = parts[-1]
+        entry = await resolve_expense_index(chat_id, short_id)
+        if not entry:
+            await destination.send_message(
+                f"ID '{short_id}' tidak ditemukan / sudah kedaluwarsa. "
+                "Cari dulu dengan /pengeluaran cari <kata>."
+            )
+            return
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🗑️ Ya, hapus", callback_data=f"exp:del:{short_id}"),
+                InlineKeyboardButton("❌ Batal", callback_data="exp:delcancel"),
+            ],
+        ])
+        await destination.send_message(
+            "Yakin mau hapus pengeluaran ini?\n"
+            f"• {format_rupiah(entry.get('nominal'))} — {entry.get('deskripsi') or '-'}\n"
+            f"• Tanggal: {entry.get('tanggal') or '-'}",
+            reply_markup=keyboard,
         )
         return
 
-    # Simpan langsung ke KV
-    success = await save_journal(chat_id, text)
-    if success:
-        await update.effective_chat.send_message(
-            "Catatan jurnal Anda telah berhasil disimpan. 📖✨\n"
-            "Untuk melihat rekap, Anda dapat meminta 'rekap jurnal minggu ini'."
+    if low.startswith("export"):
+        await destination.send_message(
+            "Export CSV belum tersedia di versi ini. Nanti menyusul ya 🙏"
         )
-    else:
-        await update.effective_chat.send_message(
-            "Gagal menyimpan catatan jurnal. Silakan coba kembali beberapa saat lagi."
+        return
+
+    if low.startswith("budget"):
+        await destination.send_message(
+            "Fitur budget bulanan belum tersedia di versi ini. Nanti menyusul ya 🙏"
         )
+        return
+
+    detection = detect_expense_entry(text)
+    if detection:
+        await _handle_detected_expense(destination, chat_id, detection, text)
+        return
+
+    # Tanpa nominal tapi membahas pengeluaran -> anggap permintaan rekap.
+    if any(kw in low for kw in ("pengeluaran", "belanja", "rekap")):
+        start, end, label = parse_periode(low)
+        entries = await query_expenses(start_date=start, end_date=end)
+        await destination.send_message(build_recap_text(entries, label))
+        return
+
+    await destination.send_message(
+        "Aku belum menemukan nominal + deskripsinya. Contoh:\n"
+        "• /pengeluaran 25rb kopi\n"
+        "• /pengeluaran rekap bulan\n"
+        "• /pengeluaran config"
+    )
+
+
+async def _finalize_items(chat_id: int, items: list[dict]) -> list[dict]:
+    """Lengkapi kategori tiap item (lokal -> AI fallback) sebelum disimpan."""
+    from src.expenses import categorize_expense
+
+    result = []
+    for item in items:
+        kategori = item.get("kategori") or await categorize_expense(
+            item.get("deskripsi", "")
+        )
+        result.append({**item, "kategori": kategori})
+    return result
+
+
+async def _persist_expense_items(chat_id: int, detection: dict) -> dict:
+    """Simpan item pengeluaran ke Notion + dedup + total harian + audit."""
+    from src.expenses import (
+        add_daily_total,
+        backup_failed_items,
+        is_duplicate,
+        log_expense_action,
+        mark_duplicate,
+        save_expense_index,
+        today_iso,
+    )
+    from src.notion import save_expense
+
+    raw_items = detection.get("items") or []
+    sumber = detection.get("sumber", "chat")
+    items = await _finalize_items(chat_id, raw_items)
+
+    saved: list[dict] = []
+    failed: list[dict] = []
+    skipped = 0
+
+    for item in items:
+        deskripsi = item.get("deskripsi") or "Pengeluaran"
+        try:
+            nominal = int(item.get("nominal") or 0)
+        except (TypeError, ValueError):
+            nominal = 0
+        tanggal = item.get("tanggal") or today_iso()
+
+        if nominal <= 0:
+            skipped += 1
+            continue
+        if await is_duplicate(chat_id, deskripsi, nominal, tanggal):
+            skipped += 1
+            continue
+
+        res = await save_expense(
+            deskripsi=deskripsi,
+            nominal=nominal,
+            kategori=item.get("kategori") or "Lain-lain",
+            tanggal=tanggal,
+            sumber=sumber,
+            toko=item.get("toko") or "",
+            catatan=item.get("catatan") or "",
+        )
+        if isinstance(res, dict) and res.get("status") == "success":
+            saved.append({**item, "page_id": res.get("page_id", "")})
+            await mark_duplicate(chat_id, deskripsi, nominal, tanggal)
+            await add_daily_total(chat_id, nominal, tanggal)
+            await log_expense_action(chat_id, "simpan", {
+                "nominal": nominal,
+                "kategori": item.get("kategori"),
+                "sumber": sumber,
+                "deskripsi": deskripsi,
+            })
+        else:
+            err = res.get("error") if isinstance(res, dict) else str(res)
+            logger.warning("Gagal simpan pengeluaran: %s", err)
+            failed.append(item)
+
+    if saved:
+        await save_expense_index(chat_id, saved)
+    if failed:
+        await backup_failed_items(chat_id, failed)
+
+    return {"saved": saved, "failed": failed, "skipped": skipped}
+
+
+async def _save_expense_items(destination, chat_id: int, detection: dict) -> dict:
+    """Simpan + kirim balasan hasil (dipakai jalur tanpa konfirmasi)."""
+    from src.expenses import build_saved_text, get_daily_total
+
+    result = await _persist_expense_items(chat_id, detection)
+    if not result["saved"]:
+        await destination.send_message(
+            "⚠️ Tidak ada entri baru yang tersimpan"
+            + (f" ({result['skipped']} duplikat dilewati)." if result["skipped"] else ".")
+        )
+        return result
+
+    total = await get_daily_total(chat_id)
+    await destination.send_message(
+        build_saved_text(result["saved"], total, result["skipped"], len(result["failed"]))
+    )
+    return result
+
+
+async def _show_expense_confirmation(destination, chat_id: int, draft: dict) -> None:
+    """Kirim bubble konfirmasi draft dengan tombol Simpan/Edit/Batal."""
+    from src.expenses import build_confirm_text
+
+    await destination.send_message(
+        build_confirm_text(draft),
+        reply_markup=_expense_confirm_keyboard(),
+    )
+
+
+async def _handle_detected_expense(
+    destination, chat_id: int, detection: dict, original_text: str = ""
+) -> bool:
+    """
+    Proses hasil deteksi pengeluaran: simpan langsung bila confidence tinggi &
+    autosave aktif, atau kirim konfirmasi. Returns True bila ditangani.
+    """
+    from src.expenses import (
+        AUTO_SAVE_CONFIDENCE,
+        get_expense_settings,
+        save_draft,
+        today_iso,
+    )
+
+    raw_items = detection.get("items") or []
+    if not raw_items:
+        return False
+
+    items = []
+    for item in raw_items:
+        items.append({
+            "nominal": item.get("nominal"),
+            "deskripsi": item.get("deskripsi"),
+            "kategori": item.get("kategori"),
+            "tanggal": today_iso(),
+            "toko": "",
+            "catatan": "",
+        })
+    normalized = {
+        "items": items,
+        "confidence": detection.get("confidence", 0.0),
+        "sumber": detection.get("sumber", "chat"),
+    }
+
+    settings = await get_expense_settings(chat_id)
+    confidence = float(normalized.get("confidence") or 0.0)
+
+    if (
+        not settings.get("autosave", True)
+        or settings.get("confirm")
+        or confidence < AUTO_SAVE_CONFIDENCE
+    ):
+        await save_draft(chat_id, normalized)
+        await _show_expense_confirmation(destination, chat_id, normalized)
+        return True
+
+    await _save_expense_items(destination, chat_id, normalized)
+    return True
+
+
+async def _handle_expense_correction(
+    destination, chat_id: int, text: str
+) -> bool:
+    """
+    Terapkan koreksi user pada draft pengeluaran (state expense_edit).
+    Returns True bila pesan dikonsumsi sebagai koreksi.
+    """
+    from src.expenses import (
+        CATEGORIES,
+        clear_draft,
+        get_draft,
+        parse_amount,
+        save_draft,
+        set_edit_state,
+        today_iso,
+    )
+
+    low = (text or "").lower().strip()
+
+    if low in ("batal", "cancel", "gak jadi", "tidak jadi", "ga jadi"):
+        draft = await get_draft(chat_id)
+        await clear_draft(chat_id)
+        await set_edit_state(chat_id, False)
+        await destination.send_message(
+            "❌ Oke, dibatalkan." if draft else "Tidak ada draft pengeluaran."
+        )
+        return True
+
+    draft = await get_draft(chat_id)
+    if not draft or not draft.get("items"):
+        await set_edit_state(chat_id, False)
+        return False
+
+    item = draft["items"][0]
+
+    amount_match = re.search(
+        r"(?:total|nominal)\s*:?\s*([\d.,]+\s*(?:rb|ribu|k|jt|juta)?)", low
+    )
+    if amount_match:
+        value = parse_amount(amount_match.group(1))
+        if value:
+            item["nominal"] = value
+
+    desc_match = re.search(
+        r"deskripsi\s*:?\s*(.+?)(?:\s+(?:total|nominal|toko|kategori|tanggal)\b|$)",
+        text, flags=re.IGNORECASE,
+    )
+    if desc_match:
+        item["deskripsi"] = desc_match.group(1).strip()[:80]
+
+    toko_match = re.search(
+        r"toko\s*:?\s*(.+?)(?:\s+(?:total|nominal|kategori|tanggal|deskripsi)\b|$)",
+        text, flags=re.IGNORECASE,
+    )
+    if toko_match:
+        item["toko"] = toko_match.group(1).strip()[:80]
+
+    for cat in CATEGORIES:
+        if cat.lower() in low:
+            item["kategori"] = cat
+            break
+
+    if "kemarin" in low:
+        import datetime as _dt
+        item["tanggal"] = (_dt.datetime.now() - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
+    elif "hari ini" in low:
+        item["tanggal"] = today_iso()
+    date_match = re.search(r"tanggal\s*:?\s*(\d{4}-\d{2}-\d{2})", low)
+    if date_match:
+        item["tanggal"] = date_match.group(1)
+
+    await save_draft(chat_id, draft)
+    await set_edit_state(chat_id, False)
+    await _show_expense_confirmation(destination, chat_id, draft)
+    return True
+
+
+async def _handle_receipt_photo(
+    update: Update, chat_id: int, file_bytes: bytes
+) -> None:
+    """Baca struk dari foto via Moondream, lalu kirim bubble konfirmasi."""
+    from src.expenses import (
+        RECEIPT_VISION_PROMPT,
+        build_confirm_text,
+        categorize_expense,
+        parse_receipt_result,
+        save_draft,
+        set_scan_pending,
+        today_iso,
+    )
+    from src.tools import analyze_image
+
+    status_msg = await update.effective_chat.send_message("Membaca struk... 🧾")
+    raw = await analyze_image(
+        file_bytes, question=RECEIPT_VISION_PROMPT, task="Visual Question Answering"
+    )
+    await set_scan_pending(chat_id, False)
+
+    async def _finish(text: str, reply_markup=None) -> None:
+        try:
+            await status_msg.edit_text(text, reply_markup=reply_markup)
+        except Exception:
+            await update.effective_chat.send_message(text, reply_markup=reply_markup)
+
+    if "Gagal menganalisis" in (raw or ""):
+        await _finish(
+            "❌ Gagal membaca struk. Coba kirim foto yang lebih terang dan jelas ya."
+        )
+        return
+
+    parsed = parse_receipt_result(raw)
+    if not parsed:
+        await _finish(
+            "❌ Aku belum bisa menemukan total di struk itu.\n"
+            "Coba kirim foto yang lebih jelas, atau catat manual: belanja indomaret 87500"
+        )
+        return
+
+    kategori = parsed.get("kategori") or await categorize_expense(
+        parsed.get("deskripsi", "")
+    )
+    item = {
+        "nominal": parsed["nominal"],
+        "deskripsi": parsed["deskripsi"],
+        "kategori": kategori,
+        "tanggal": parsed.get("tanggal") or today_iso(),
+        "toko": parsed.get("toko", ""),
+        "catatan": parsed.get("catatan", ""),
+    }
+    draft = {"items": [item], "sumber": "struk"}
+    await save_draft(chat_id, draft)
+    await _finish(build_confirm_text(draft), reply_markup=_expense_confirm_keyboard())
+
+
+async def _handle_expense_callback(query, chat_id: int, action: str) -> None:
+    """Handler tombol inline fitur pengeluaran (exp:*)."""
+    from src.expenses import (
+        clear_draft,
+        format_rupiah,
+        get_draft,
+        get_daily_total,
+        get_expense_settings,
+        log_expense_action,
+        resolve_expense_index,
+        set_edit_state,
+        set_expense_settings,
+        set_scan_pending,
+    )
+    from src.notion import archive_expense
+
+    action_low = (action or "").strip().lower()
+
+    async def _edit_or_reply(text: str, reply_markup=None) -> None:
+        try:
+            await query.message.edit_text(text, reply_markup=reply_markup)
+        except Exception:
+            try:
+                await query.message.chat.send_message(text, reply_markup=reply_markup)
+            except Exception as e:
+                logger.warning("Gagal kirim pesan pengeluaran: %s", str(e))
+
+    if action_low == "save":
+        draft = await get_draft(chat_id)
+        if not draft:
+            await _edit_or_reply("Draft sudah kedaluwarsa. Kirim ulang pengeluarannya ya.")
+            return
+        from src.expenses import build_saved_text
+        result = await _persist_expense_items(chat_id, draft)
+        await clear_draft(chat_id)
+        if result["saved"]:
+            total = await get_daily_total(chat_id)
+            await _edit_or_reply(
+                build_saved_text(
+                    result["saved"], total, result["skipped"], len(result["failed"])
+                )
+            )
+        else:
+            await _edit_or_reply("⚠️ Tidak ada entri baru yang tersimpan.")
+        return
+
+    if action_low == "cancel":
+        await clear_draft(chat_id)
+        await set_edit_state(chat_id, False)
+        await _edit_or_reply("❌ Dibatalkan. Tidak ada yang disimpan.")
+        return
+
+    if action_low == "edit":
+        draft = await get_draft(chat_id)
+        if not draft:
+            await _edit_or_reply("Draft sudah kedaluwarsa. Kirim ulang pengeluarannya ya.")
+            return
+        await set_edit_state(chat_id, True)
+        await _edit_or_reply(
+            "✏️ Ketik koreksinya dalam satu pesan. Contoh:\n"
+            "total 90000 toko Alfamart kategori Belanja\n"
+            "atau: deskripsi kopi susu total 27rb kategori Makan & Minum"
+        )
+        return
+
+    if action_low == "scan":
+        await set_scan_pending(chat_id, True)
+        await query.message.chat.send_message(
+            "📸 Kirim foto struknya sekarang ya (maks 4 MB)."
+        )
+        return
+
+    if action_low.startswith("del:"):
+        short_id = action[4:].strip().upper()
+        entry = await resolve_expense_index(chat_id, short_id)
+        if not entry:
+            await _edit_or_reply("ID tidak ditemukan / sudah kedaluwarsa.")
+            return
+        res = await archive_expense(entry.get("page_id", ""))
+        if isinstance(res, dict) and res.get("status") == "success":
+            await log_expense_action(chat_id, "hapus", {
+                "nominal": entry.get("nominal"),
+                "deskripsi": entry.get("deskripsi"),
+                "sumber": "manual",
+            })
+            await _edit_or_reply(
+                f"🗑️ Dihapus: {entry.get('deskripsi') or '-'} "
+                f"({format_rupiah(entry.get('nominal'))})"
+            )
+        else:
+            err = res.get("error") if isinstance(res, dict) else str(res)
+            await _edit_or_reply(f"❌ Gagal menghapus: {err}")
+        return
+
+    if action_low == "delcancel":
+        await _edit_or_reply("Oke, tidak jadi dihapus.")
+        return
+
+    if action_low in ("cfg:auto", "cfg:conf"):
+        settings = await get_expense_settings(chat_id)
+        if action_low == "cfg:auto":
+            await set_expense_settings(
+                chat_id, autosave=not settings.get("autosave", True)
+            )
+        else:
+            await set_expense_settings(
+                chat_id, confirm=not settings.get("confirm", False)
+            )
+        cfg_text, keyboard = await _render_expense_config(chat_id)
+        await _edit_or_reply(cfg_text, reply_markup=keyboard)
+        return
 
 
 POPULAR_STOCK_TICKERS = [
@@ -1183,6 +1789,10 @@ HEAVY_KEYWORDS = {
     "rekomendasi": ["rekomendasi", "film", "lagu", "seri", "anime"],
     "suara": ["suara", "nyanyi", "gombal", "puisi", "voice note", "vn"],
     "jurnal": ["catat jurnal", "rekap jurnal", "jurnal harian"],
+    "pengeluaran": [
+        "pengeluaran", "catat pengeluaran", "rekap pengeluaran",
+        "catatan pengeluaran", "catat belanja",
+    ],
     "kuota": ["kuota", "token", "quota", "cek kuota ai", "kuota ai", "pemakaian ai", "status ai", "cek ai quota", "sisa kuota", "sisa token"],
     "health": ["cek kesehatan", "cek fitur", "health check", "fitur rusak", "kesehatan fitur"],
     "kelola_fitur": [
@@ -1261,7 +1871,7 @@ HEAVY_KEYWORDS = {
 # Intent tool cepat (saham, cuaca) diproses SINKRON agar respons langsung & cepat
 # (grounding mengambil data nyata lalu model merangkum singkat).
 HEAVY_BACKGROUND_INTENTS = {
-    "rekomendasi", "suara", "jurnal", "drive",
+    "rekomendasi", "suara", "drive",
     "search", "gambar", "neo4j", "coding", "github", "vercel_logs", "lokasi",
     "coding_agent",
 }
@@ -1269,17 +1879,37 @@ HEAVY_BACKGROUND_INTENTS = {
 
 
 
+# Cache pola regex per keyword: keyword dicocokkan sebagai KATA UTUH (word boundary),
+# bukan substring, agar tidak salah intent karena keyword nyangkut di kata lain
+# (mis. "seri" di "sans-serif", "file" di "profile", "live" di "deliver").
+_KEYWORD_PATTERN_CACHE: dict = {}
+# Sufiks umum bahasa Indonesia yang boleh menempel di akhir keyword
+# (mis. "filmnya", "deploykan", "kodein", "kuotanya").
+_KEYWORD_SUFFIX = r"(?:nya|kan|in|ku|mu|lah|kah|sih|deh|dong)?"
+
+
+def _keyword_in_text(text_lower: str, keyword: str) -> bool:
+    """Cek keyword sebagai kata utuh (plus sufiks Indonesia opsional)."""
+    pattern = _KEYWORD_PATTERN_CACHE.get(keyword)
+    if pattern is None:
+        pattern = re.compile(rf"\b{re.escape(keyword)}{_KEYWORD_SUFFIX}\b")
+        _KEYWORD_PATTERN_CACHE[keyword] = pattern
+    return bool(pattern.search(text_lower))
+
+
 def detect_intent(text: str) -> str | None:
     """
     Mendeteksi apakah pesan pengguna membutuhkan tools (heavy intent).
+    Keyword dicocokkan sebagai kata utuh (word boundary + sufiks Indonesia),
+    sehingga kata kunci yang nyangkut di kata lain tidak salah memicu intent.
     Jika tidak ada kata kunci yang cocok, mengembalikan None (Fast Path).
     """
     text_lower = text.lower().strip()
     words = text_lower.split()
 
-    # 1. Cek kata kunci persis/substring
+    # 1. Cek kata kunci sebagai kata utuh (bukan substring)
     for intent, keywords in HEAVY_KEYWORDS.items():
-        if any(kw in text_lower for kw in keywords):
+        if any(_keyword_in_text(text_lower, kw) for kw in keywords):
             return intent
 
     # 2. Deteksi otomatis kode saham 4 huruf standalone (misal: "BUMI", "BBCA")
@@ -1913,6 +2543,7 @@ async def _route_by_intent(
             "search": "search",
             "suara": "suara",
             "jurnal": "jurnal",
+            "pengeluaran": "pengeluaran",
             "neo4j": "neo4j",
             "coding": "coding",
             "akademik": "akademik",
@@ -1927,6 +2558,22 @@ async def _route_by_intent(
                 f"Fitur {feat_name} sedang dinonaktifkan. Mau diaktifkan lagi?"
             )
             return
+
+    # --- Jurnal lama: alias deprecated yang mengarahkan ke fitur pengeluaran ---
+    if intent == "jurnal":
+        await destination.send_message(
+            "Fitur jurnal sudah diganti jadi fitur pengeluaran. 🧾\n\n"
+            "Coba:\n"
+            "• Ketik langsung: kopi 25rb\n"
+            "• /pengeluaran rekap — rekap pengeluaran\n"
+            "• Kirim foto struk dengan caption \"struk\""
+        )
+        return
+
+    # --- Pengeluaran: dieksekusi imperatif (parser regex + Notion), bukan lewat model ---
+    if intent == "pengeluaran":
+        await _handle_expense_intent(destination, chat_id, user_message)
+        return
 
     # --- Notion: pastikan simpan catatan BENAR-BENAR memanggil tool & terverifikasi (anti mengarang) ---
     # Simpan catatan dieksekusi langsung, bukan diserahkan ke keputusan model yang bisa mengarang.
@@ -2172,6 +2819,15 @@ async def handle_message(
     if update.effective_user and update.effective_user.first_name:
         user_name = update.effective_user.first_name
 
+    # --- Koreksi draft pengeluaran (user menekan tombol Edit di bubble konfirmasi) ---
+    from src.expenses import is_edit_state
+    if await is_edit_state(chat_id):
+        handled = await _handle_expense_correction(
+            update.effective_chat, chat_id, user_message
+        )
+        if handled:
+            return
+
     # --- Pending Task: Cek keputusan pengguna untuk pending task ---
     from src.kv import clear_pending_task, get_pending_task
     pending_task = await get_pending_task(chat_id)
@@ -2250,6 +2906,19 @@ async def handle_message(
             await save_clarify_state(chat_id, user_message)
             await update.effective_chat.send_message(target_question)
             return
+
+    # --- Deteksi pengeluaran dari chat bebas (mis. "kopi 25rb", "beli bensin 50rb") ---
+    # Dicek sebelum intent classifier agar tidak perlu LLM untuk pola nominal yang jelas.
+    from src.expenses import detect_expense_entry
+    expense_detection = detect_expense_entry(user_message)
+    if expense_detection:
+        from src.kv import is_feature_active
+        if await is_feature_active("pengeluaran"):
+            handled = await _handle_detected_expense(
+                update.effective_chat, chat_id, expense_detection, user_message
+            )
+            if handled:
+                return
 
     # Deteksi intent context-aware (hybrid keyword + LLM gate).
     decision = await resolve_intent_decision(user_message, chat_id)
@@ -2357,11 +3026,22 @@ async def handle_file_message(
         return
 
     caption = (update.message.caption or "").strip()
+    caption_lower = caption.lower()
+
+    # Permintaan simpan ke drive dievaluasi lebih dulu (kata kunci eksplisit).
+    is_drive_request = any(
+        kw in caption_lower for kw in ["simpan", "folder", "drive", "upload", "database"]
+    )
+
+    # Foto struk -> alur pengeluaran (caption struk/nota/bon atau state scan aktif).
+    if is_photo and not is_drive_request:
+        from src.expenses import RECEIPT_CAPTION_KEYWORDS, is_scan_pending
+        receipt_kw = any(kw in caption_lower for kw in RECEIPT_CAPTION_KEYWORDS)
+        if receipt_kw or await is_scan_pending(chat_id):
+            await _handle_receipt_photo(update, chat_id, file_bytes)
+            return
 
     # Jika foto dan bukan permintaan simpan ke drive secara eksplisit, gunakan Moondream VLM
-    is_drive_request = any(
-        kw in caption.lower() for kw in ["simpan", "folder", "drive", "upload", "database"]
-    )
     if is_photo and not is_drive_request:
         await update.effective_chat.send_action("typing")
         caption_lower = caption.lower()

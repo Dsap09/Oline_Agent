@@ -64,6 +64,39 @@ class TestNotionIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertIn("save_memory_to_notion", tool_names)
         self.assertIn("add_notion_property", tool_names)
 
+    async def test_inspect_expense_schema_prefers_property_with_options(self):
+        """Bila ada duplikat 'kategori' & 'Kategori', pilih yang sudah punya opsi."""
+        from src.notion import _inspect_expense_schema
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {"properties": {
+                    "kategori": {"type": "select", "select": {
+                        "options": [{"name": "belanja"}, {"name": "transport"}]}},
+                    "Nominal": {"type": "number"},
+                    "Sumber": {"type": "select", "select": {"options": [{"name": "chat"}]}},
+                    "catatan": {"type": "rich_text"},
+                    "Tanggal": {"type": "date"},
+                    "Kategori": {"type": "select", "select": {"options": []}},
+                    "Toko": {"type": "rich_text"},
+                    "Deskripsi": {"type": "title"},
+                }}
+
+        class _Client:
+            async def get(self, url, headers=None):
+                return _Resp()
+
+        schema = await _inspect_expense_schema(_Client(), "dbid", {})
+        self.assertEqual(schema["kategori"], "kategori")
+        self.assertEqual(schema["sumber"], "Sumber")
+        self.assertEqual(schema["title"], "Deskripsi")
+        self.assertEqual(schema["nominal"], "Nominal")
+        self.assertEqual(schema["tanggal"], "Tanggal")
+        self.assertEqual(schema["toko"], "Toko")
+        self.assertEqual(schema["catatan"], "catatan")
+
     @patch("httpx.AsyncClient.patch", new_callable=AsyncMock)
     async def test_add_notion_property_success(self, mock_patch):
         """Tes add_notion_property berhasil menambahkan kolom ke Notion database."""

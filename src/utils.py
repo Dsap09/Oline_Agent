@@ -252,7 +252,7 @@ def clean_tool_calls(text: str) -> str:
     known_tools = {
         "toggle_feature", "check_ai_quota", "check_quota", "check_feature_health",
         "get_movie_recommendation", "get_music_recommendation", "get_weather_forecast",
-        "save_journal_entry", "get_journal_recap", "send_voice_message", "search_internet",
+        "save_expense", "get_expense_recap", "send_voice_message", "search_internet",
         "get_stock_price", "get_market_summary", "create_drive_folder", "list_drive_files",
         "search_drive_files", "upload_to_drive", "download_from_drive", "get_nearby_places",
         "search_places_by_city", "execute_code", "save_note_to_notion", "save_memory_to_notion",

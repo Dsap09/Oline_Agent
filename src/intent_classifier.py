@@ -26,6 +26,12 @@ CACHE_TTL_SECONDS = 3600
 TOPIC_TTL_SECONDS = 3600
 CLASSIFIER_TIMEOUT = 8.0
 
+# Batas "perintah jelas" yang boleh langsung dieksekusi tanpa LLM.
+# Pesan yang lebih panjang (mis. brief landing page) tetap diverifikasi LLM karena
+# rawan memuat kata kunci insidental di dalam prosa (mis. "rekomendasi", "film").
+MAX_DIRECTIVE_WORDS = 40
+MAX_DIRECTIVE_CHARS = 300
+
 # Daftar intent yang dikenali + deskripsi singkat untuk prompt classifier.
 INTENT_TAXONOMY = {
     "coding_agent": "mengubah/memperbaiki kode Oline sendiri (self-improvement), tambah fitur, refactor",
@@ -35,7 +41,8 @@ INTENT_TAXONOMY = {
     "cuaca": "cek prakiraan cuaca suatu kota",
     "rekomendasi": "minta rekomendasi film/lagu/seri/anime",
     "suara": "minta voice note, nyanyi, gombal, atau puisi",
-    "jurnal": "catat jurnal atau rekap jurnal",
+    "pengeluaran": "catat, rekap, cari, atau hapus pengeluaran/belanja",
+    "jurnal": "catat jurnal lama (DEPRECATED, arahkan ke pengeluaran)",
     "kuota": "cek kuota/pemakaian AI atau token",
     "health": "cek kesehatan fitur Oline",
     "kelola_fitur": "aktifkan/nonaktifkan fitur Oline",
@@ -63,7 +70,8 @@ INTENT_LABELS = {
     "cuaca": "cek cuaca",
     "rekomendasi": "minta rekomendasi film/lagu",
     "suara": "kirim voice note",
-    "jurnal": "catat/rekap jurnal",
+    "pengeluaran": "catat/rekap pengeluaran",
+    "jurnal": "catat jurnal (fitur lama)",
     "kuota": "cek kuota AI",
     "health": "cek kesehatan fitur",
     "kelola_fitur": "atur fitur Oline",
@@ -110,7 +118,7 @@ _DIRECTIVE_VERBS = (
     "jalankan", "eksekusi", "catat", "simpan", "tulis", "rekam",
     "perbarui", "update", "ganti", "renew", "refresh", "rotasi",
     "matikan", "nonaktifkan", "aktifkan", "hidupkan", "toggle",
-    "lanjutkan", "hapus", "delete", "daftar", "list",
+    "lanjutkan", "hapus", "delete", "daftar", "list", "rekap",
 )
 
 # Penanda permintaan data/query (mis. "berapa harga saham BBCA").
@@ -156,7 +164,12 @@ def _is_clear_directive(text: str, intent: Optional[str]) -> bool:
     if _is_meta_question(low):
         return False
 
+    # Pesan panjang (mis. brief landing page) rawan memuat kata kunci insidental;
+    # verifikasi lewat LLM gate dulu agar intent tidak salah.
     words = low.split()
+    if len(words) > MAX_DIRECTIVE_WORDS or len(low) > MAX_DIRECTIVE_CHARS:
+        return False
+
     first_word = words[0].rstrip(",.") if words else ""
     starts_with_directive = first_word in _DIRECTIVE_VERBS
     has_query_marker = any(marker in low for marker in _QUERY_MARKERS)

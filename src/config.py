@@ -54,6 +54,7 @@ FITUR_LIST = [
     "search",
     "calendar",
     "akademik",
+    "pengeluaran",
     "cek_token",
     "renew_token",
     "coding_agent",

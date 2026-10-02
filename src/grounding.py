@@ -24,7 +24,7 @@ SKIP = "skip"                  # tidak butuh grounding
 
 GROUNDING_INTENTS = (
     "cuaca", "saham", "search", "lokasi", "design_reference",
-    "jurnal", "gambar", "vercel_logs", "neo4j",
+    "pengeluaran", "gambar", "vercel_logs", "neo4j",
 )
 
 
@@ -177,9 +177,9 @@ _GROUNDING_SPECS: dict[str, dict[str, Any]] = {
         "need": "referensi desain untuk apa? (misal: landing page toko buku)",
         "should_ground": lambda m: True,
     },
-    "jurnal": {
-        "tool": "get_journal_recap",
-        "extract": lambda m: {},
+    "pengeluaran": {
+        "tool": "get_expense_recap",
+        "extract": lambda m: {"periode": "bulan"},
         "need": None,
         "should_ground": lambda m: True,
     },

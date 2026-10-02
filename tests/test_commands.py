@@ -37,7 +37,8 @@ class TestCommandHelp(unittest.TestCase):
     def test_help_detail_contains_intended_commands(self):
         """Tes daftar bantuan memuat command yang diimplementasikan."""
         for cmd in ("start", "help", "menu", "clear", "batal", "status",
-                    "cuaca", "saham", "cari", "gambar", "kuota", "jurnal",
+                    "cuaca", "saham", "cari", "gambar", "kuota",
+                    "pengeluaran",
                     "list", "preview", "landing", "deploy", "tasks",
                     "fitur", "aktifkan", "matikan", "log", "persona", "models", "memory"):
             self.assertIn(cmd, COMMAND_HELP_DETAIL)
@@ -139,6 +140,34 @@ class TestSahamFalsePositive(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await detect_intent_async("berapa harga saham BBCA", chat_id=999), "saham")
 
 
+class TestKeywordWordBoundary(unittest.TestCase):
+    """Keyword dicocokkan sebagai kata utuh, bukan substring (cegah salah intent)."""
+
+    def test_sans_serif_tidak_jadi_rekomendasi(self):
+        prompt = (
+            "Buatkan landing page modern untuk startup Dministar dengan font sans-serif modern, "
+            "warna biru-putih, testimoni klien, CTA, dan footer."
+        )
+        self.assertEqual(detect_intent(prompt), "preview")
+
+    def test_kata_seri_tetap_rekomendasi(self):
+        self.assertEqual(detect_intent("rekomendasi seri terbaru dong"), "rekomendasi")
+
+    def test_profile_bukan_drive(self):
+        self.assertIsNone(detect_intent("cek profile akun pengguna"))
+        self.assertEqual(detect_intent("cari file profile akun"), "drive")
+
+    def test_sufiks_indonesia_masih_terdeteksi(self):
+        self.assertEqual(detect_intent("filmnya dong"), "rekomendasi")
+        self.assertEqual(detect_intent("deploykan website ini"), "deploy")
+        self.assertEqual(detect_intent("kuotanya tinggal berapa?"), "kuota")
+
+    def test_kata_nyangkut_lain_tidak_memicu(self):
+        # "atm" di dalam "atmosphere", "live" di dalam "deliver".
+        self.assertNotEqual(detect_intent("suasana atmosphere kantor"), "lokasi")
+        self.assertNotEqual(detect_intent("tolong deliver pesan ini"), "deploy")
+
+
 class TestApplicationRegistration(unittest.TestCase):
 
     def test_create_application_registers_commands(self):
@@ -155,6 +184,7 @@ class TestApplicationRegistration(unittest.TestCase):
                     registered.update(handler.commands)
         for cmd in ("start", "help", "menu", "clear", "batal", "status",
                     "cuaca", "saham", "cari", "gambar", "kuota", "jurnal",
+                    "pengeluaran",
                     "list", "preview", "landing", "deploy", "tasks",
                     "fitur", "aktifkan", "matikan", "log", "persona", "models", "memory"):
             self.assertIn(cmd, registered)

@@ -1294,6 +1294,7 @@ DEFAULT_FEATURE_FLAGS = {
     "calendar": True,
     "search": True,
     "deploy": True,
+    "pengeluaran": True,
 }
 
 

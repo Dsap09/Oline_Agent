@@ -29,7 +29,7 @@ Oline Agent adalah bot Telegram asisten pribadi berpersona Gen-Z yang cerdas, ce
 - **🎙️ Pesan Suara (Voice Note)** — Oline bisa bernyanyi, menggombal, atau membaca puisi dalam bentuk Voice Note Telegram bersuara natural (via ElevenLabs TTS).
 - **🔍 Search Internet Real-time** — Pencarian berita terkini, fakta terbaru, dan definisi di internet (via DuckDuckGo Search `ddgs`).
 - **📂 Google Drive Integration (Database Oline)** — Manajemen folder, listing file, pencarian file, upload foto/dokumen dari Telegram ke Drive, dan download file dari Drive langsung ke Telegram (via Google Drive OAuth 2.0 API).
-- **📔 Jurnal Harian** — Pencatatan jurnal harian dan rekap harian/mingguan (via Vercel KV / Upstash Redis).
+- **🧾 Pencatatan Pengeluaran (Pengganti Jurnal)** — Catat pengeluaran langsung dari chat ("kopi 25rb", "beli bensin 50rb"), lewat command `/pengeluaran`, atau baca struk dari foto (Moondream VLM). Nominal fleksibel (25rb/25k/25.000/Rp 25.000), kategori otomatis (map lokal + fallback AI), konfirmasi tombol, anti-duplikat, rekap harian/mingguan/bulanan dengan breakdown kategori, cari & hapus, serta audit log 30 hari. Data tersimpan di database Notion "Keuangan Oline".
 - **📊 Cek Kuota & Pemakaian API** — Tool `check_quota` untuk memantau sisa kuota harian Groq (Fast Path) dan Gemini (Slow Path) secara transparan.
 - **🚨 Smart Rate Limiting** — Pembatasan rate limit 25 req/menit per user dengan pengecekan TTL otomatis di Redis pipeline untuk mencegah kunci permanen.
 - **⚙️ Kelola Fitur & Health Check** — Aktifkan/nonaktifkan fitur per pengguna, cek status kesehatan semua fitur, dan monitor error otomatis.

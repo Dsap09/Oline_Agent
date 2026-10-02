@@ -810,3 +810,474 @@ async def clear_memory_cache(memory_type: Optional[str] = None) -> bool:
     await del_cache("cache:notion_memory:Preferensi")
     return True
 
+
+# --- Database Pengeluaran "Keuangan Oline" ---
+
+async def _resolve_expense_db_id() -> str:
+    """
+    ID database pengeluaran: env NOTION_EXPENSE_DATABASE_ID, fallback KV
+    'expense_db_id' (agar bisa dikonfigurasi via /pengeluaran config tanpa redeploy).
+    """
+    raw = (os.environ.get("NOTION_EXPENSE_DATABASE_ID") or "").strip().strip('"').strip("'")
+    if not raw:
+        try:
+            from src.kv import get_cache
+            raw = (await get_cache("expense_db_id") or "").strip()
+        except Exception:
+            raw = ""
+    db_id = extract_database_id(raw)
+    cleaned = db_id.replace("-", "")
+    if len(cleaned) == 32:
+        return cleaned
+    return db_id
+
+
+def _expense_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {os.environ.get('NOTION_API_KEY', '').strip()}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+
+
+async def _inspect_expense_schema(
+    client: httpx.AsyncClient, database_id: str, headers: dict
+) -> dict[str, Optional[str]]:
+    """
+    Deteksi nama properti database Keuangan Oline secara dinamis.
+    Returns dict logical key -> nama properti (None bila tidak ada di DB).
+    """
+    schema: dict[str, Optional[str]] = {
+        "title": None,
+        "nominal": None,
+        "kategori": None,
+        "kategori_type": None,
+        "sumber": None,
+        "sumber_type": None,
+        "tanggal": None,
+        "toko": None,
+        "catatan": None,
+    }
+    try:
+        db_resp = await client.get(
+            f"https://api.notion.com/v1/databases/{database_id}", headers=headers
+        )
+        if db_resp.status_code != 200:
+            logger.warning(
+                "Inspeksi schema pengeluaran gagal (status %d): %s",
+                db_resp.status_code, db_resp.text[:200],
+            )
+            return schema
+
+        props = db_resp.json().get("properties", {})
+        # (nama, tipe, jumlah opsi) — jumlah opsi dipakai untuk memilih properti
+        # kategori/sumber yang benar bila ada duplikat (mis. "kategori" vs "Kategori").
+        selects: list[tuple[str, str, int]] = []
+        rich_texts: list[str] = []
+        for p_name, p_info in props.items():
+            p_type = p_info.get("type")
+            p_clean = p_name.strip().lower()
+
+            if p_type == "title":
+                schema["title"] = p_name
+            elif p_type == "number":
+                schema["nominal"] = p_name
+            elif p_type == "date":
+                schema["tanggal"] = p_name
+            elif p_type in ("select", "status"):
+                opts = (p_info.get("select") or p_info.get("status") or {}).get("options") or []
+                selects.append((p_name, p_type, len(opts)))
+            elif p_type == "rich_text":
+                rich_texts.append(p_name)
+                if "toko" in p_clean or "store" in p_clean or "merchant" in p_clean:
+                    schema["toko"] = p_name
+                elif "catatan" in p_clean or "note" in p_clean or "keterangan" in p_clean or "item" in p_clean:
+                    schema["catatan"] = p_name
+
+        def _pick_select(candidates: list[tuple[str, str, int]]) -> tuple[Optional[str], Optional[str]]:
+            """Pilih kandidat dengan opsi terisi lebih dulu agar data konsisten."""
+            with_opts = [c for c in candidates if c[2] > 0]
+            pool = with_opts or candidates
+            return (pool[0][0], pool[0][1]) if pool else (None, None)
+
+        selected_names: set[str] = set()
+        kategori_cands = [
+            c for c in selects
+            if "kategori" in c[0].lower() or "category" in c[0].lower()
+        ]
+        if kategori_cands:
+            schema["kategori"], schema["kategori_type"] = _pick_select(kategori_cands)
+            selected_names.add(schema["kategori"] or "")
+
+        sumber_cands = [
+            c for c in selects
+            if "sumber" in c[0].lower() or "source" in c[0].lower()
+        ]
+        if sumber_cands:
+            schema["sumber"], schema["sumber_type"] = _pick_select(sumber_cands)
+            selected_names.add(schema["sumber"] or "")
+
+        # Fallback: pilih select yang belum terpakai.
+        remaining_selects = [c for c in selects if c[0] not in selected_names]
+        if not schema["kategori"] and remaining_selects:
+            schema["kategori"], schema["kategori_type"] = _pick_select(remaining_selects)
+            remaining_selects = [c for c in remaining_selects if c[0] != schema["kategori"]]
+        if not schema["sumber"] and remaining_selects:
+            schema["sumber"], schema["sumber_type"] = _pick_select(remaining_selects)
+
+        remaining_rt = [n for n in rich_texts if n not in (schema["toko"], schema["catatan"])]
+        if not schema["toko"] and remaining_rt:
+            schema["toko"] = remaining_rt.pop(0)
+        if not schema["catatan"] and remaining_rt:
+            schema["catatan"] = remaining_rt.pop(0)
+    except Exception as e:
+        logger.warning("Gagal inspeksi schema database pengeluaran: %s", str(e))
+    return schema
+
+
+def _select_payload(prop_type: Optional[str], value: str) -> dict:
+    if prop_type == "status":
+        return {"status": {"name": value}}
+    return {"select": {"name": value}}
+
+
+async def save_expense(
+    deskripsi: str,
+    nominal: int,
+    kategori: str = "Lain-lain",
+    tanggal: Optional[str] = None,
+    sumber: str = "manual",
+    toko: str = "",
+    catatan: str = "",
+) -> dict[str, Any]:
+    """
+    Menyimpan satu pengeluaran ke database Notion "Keuangan Oline".
+    Returns {"status": "success", "page_id", "url", ...} atau {"error": ...}.
+    """
+    api_key = os.environ.get("NOTION_API_KEY", "").strip()
+    if not api_key:
+        return {"error": "NOTION_API_KEY belum dikonfigurasi."}
+    database_id = await _resolve_expense_db_id()
+    if not database_id:
+        return {"error": "Database pengeluaran belum dikonfigurasi (NOTION_EXPENSE_DATABASE_ID)."}
+
+    if not deskripsi or not deskripsi.strip():
+        return {"error": "Deskripsi pengeluaran kosong."}
+    try:
+        nominal_val = int(round(float(nominal)))
+    except (TypeError, ValueError):
+        return {"error": "Nominal tidak valid."}
+    if nominal_val <= 0:
+        return {"error": "Nominal harus lebih dari 0."}
+
+    wib = timezone(timedelta(hours=7))
+    tanggal_iso = (tanggal or datetime.now(wib).strftime("%Y-%m-%d")).strip()[:10]
+
+    headers = _expense_headers()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            schema = await _inspect_expense_schema(client, database_id, headers)
+            if not schema.get("nominal"):
+                return {"error": "Properti 'Nominal' (number) tidak ditemukan di database pengeluaran."}
+            if not schema.get("title"):
+                return {"error": "Properti judul (title) tidak ditemukan di database pengeluaran."}
+
+            properties: dict[str, Any] = {
+                schema["title"]: {"title": [{"text": {"content": deskripsi.strip()[:120]}}]},
+                schema["nominal"]: {"number": nominal_val},
+            }
+            if schema.get("kategori"):
+                properties[schema["kategori"]] = _select_payload(
+                    schema.get("kategori_type"), (kategori or "Lain-lain").strip()
+                )
+            if schema.get("sumber"):
+                properties[schema["sumber"]] = _select_payload(schema.get("sumber_type"), sumber)
+            if schema.get("tanggal"):
+                properties[schema["tanggal"]] = {"date": {"start": tanggal_iso}}
+            if schema.get("toko") and toko:
+                properties[schema["toko"]] = {
+                    "rich_text": [{"type": "text", "text": {"content": toko.strip()[:200]}}]
+                }
+            if schema.get("catatan") and catatan:
+                properties[schema["catatan"]] = {
+                    "rich_text": [{"type": "text", "text": {"content": catatan.strip()[:1800]}}]
+                }
+
+            payload = {"parent": {"database_id": database_id}, "properties": properties}
+            resp = await client.post("https://api.notion.com/v1/pages", json=payload, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                return {
+                    "status": "success",
+                    "page_id": data.get("id", ""),
+                    "url": data.get("url", ""),
+                    "deskripsi": deskripsi.strip()[:120],
+                    "nominal": nominal_val,
+                    "kategori": (kategori or "Lain-lain").strip(),
+                    "tanggal": tanggal_iso,
+                    "sumber": sumber,
+                }
+            if resp.status_code == 404:
+                return {
+                    "error": "Database pengeluaran tidak ditemukan (404). Pastikan database dibagikan ke Integrasi Notion."
+                }
+            err_text = resp.text[:200]
+            logger.error("Notion save_expense error (status %d): %s", resp.status_code, err_text)
+            return {"error": f"Gagal menyimpan pengeluaran (status {resp.status_code})."}
+    except httpx.TimeoutException:
+        return {"error": "Koneksi ke Notion timeout. Coba lagi ya."}
+    except Exception as e:
+        logger.error("Error in save_expense: %s", str(e))
+        return {"error": f"Gagal menghubungi Notion: {str(e)}"}
+
+
+def _extract_select_any(props: dict, key: Optional[str]) -> str:
+    if not key or key not in props:
+        return ""
+    info = props.get(key) or {}
+    select = info.get("select") or info.get("status") or {}
+    return (select.get("name") or "").strip()
+
+
+def _map_expense_page(page: dict, schema: dict) -> dict[str, Any]:
+    props = page.get("properties", {}) or {}
+    title_key = schema.get("title")
+    title_arr = []
+    if title_key:
+        title_arr = props.get(title_key, {}).get("title", []) or []
+    deskripsi = ""
+    if title_arr:
+        deskripsi = title_arr[0].get("text", {}).get("content", "").strip()
+
+    nominal = None
+    if schema.get("nominal"):
+        nominal = props.get(schema["nominal"], {}).get("number")
+
+    tanggal = ""
+    if schema.get("tanggal"):
+        date_info = props.get(schema["tanggal"], {}).get("date") or {}
+        tanggal = (date_info.get("start") or "")[:10]
+
+    return {
+        "id": page.get("id", ""),
+        "deskripsi": deskripsi,
+        "nominal": nominal,
+        "kategori": _extract_select_any(props, schema.get("kategori")),
+        "sumber": _extract_select_any(props, schema.get("sumber")),
+        "tanggal": tanggal,
+        "toko": _extract_rich_text(props, schema.get("toko")),
+        "catatan": _extract_rich_text(props, schema.get("catatan")),
+        "url": page.get("url", ""),
+    }
+
+
+async def query_expenses(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    keyword: Optional[str] = None,
+    max_pages: int = 5,
+) -> list[dict[str, Any]]:
+    """
+    Query database pengeluaran Notion.
+    - start_date/end_date format YYYY-MM-DD (filter properti Tanggal).
+    - keyword difilter di sisi Python (deskripsi/kategori/toko/catatan).
+    Returns list dict terurut tanggal terbaru lebih dulu.
+    """
+    api_key = os.environ.get("NOTION_API_KEY", "").strip()
+    database_id = await _resolve_expense_db_id()
+    if not api_key or not database_id:
+        return []
+
+    headers = _expense_headers()
+    results: list[dict[str, Any]] = []
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            schema = await _inspect_expense_schema(client, database_id, headers)
+
+            filters = []
+            if schema.get("tanggal"):
+                if start_date:
+                    filters.append({
+                        "property": schema["tanggal"],
+                        "date": {"on_or_after": start_date[:10]},
+                    })
+                if end_date:
+                    filters.append({
+                        "property": schema["tanggal"],
+                        "date": {"on_or_before": end_date[:10]},
+                    })
+
+            payload: dict[str, Any] = {"page_size": 100}
+            if len(filters) == 1:
+                payload["filter"] = filters[0]
+            elif len(filters) > 1:
+                payload["filter"] = {"and": filters}
+            if schema.get("tanggal"):
+                payload["sorts"] = [{"property": schema["tanggal"], "direction": "descending"}]
+
+            cursor = None
+            for _ in range(max(1, max_pages)):
+                if cursor:
+                    payload["start_cursor"] = cursor
+                resp = await client.post(
+                    f"https://api.notion.com/v1/databases/{database_id}/query",
+                    json=payload,
+                    headers=headers,
+                )
+                if resp.status_code != 200:
+                    logger.warning("Notion query_expenses status %d: %s", resp.status_code, resp.text[:200])
+                    break
+                data = resp.json()
+                for page in data.get("results", []):
+                    results.append(_map_expense_page(page, schema))
+                if not data.get("has_more"):
+                    break
+                cursor = data.get("next_cursor")
+                if not cursor:
+                    break
+    except Exception as e:
+        logger.error("Error in query_expenses: %s", str(e))
+        return results
+
+    if keyword:
+        kw = keyword.strip().lower()
+        results = [
+            r for r in results
+            if kw in (r.get("deskripsi") or "").lower()
+            or kw in (r.get("kategori") or "").lower()
+            or kw in (r.get("toko") or "").lower()
+            or kw in (r.get("catatan") or "").lower()
+        ]
+    return results
+
+
+async def archive_expense(page_id: str) -> dict[str, Any]:
+    """Mengarsipkan (menghapus lembut) satu halaman pengeluaran Notion."""
+    api_key = os.environ.get("NOTION_API_KEY", "").strip()
+    if not api_key:
+        return {"error": "NOTION_API_KEY belum dikonfigurasi."}
+    if not page_id:
+        return {"error": "page_id kosong."}
+
+    headers = _expense_headers()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.patch(
+                f"https://api.notion.com/v1/pages/{page_id}",
+                json={"archived": True},
+                headers=headers,
+            )
+            if resp.status_code == 200:
+                return {"status": "success", "page_id": page_id}
+            err_text = resp.text[:200]
+            logger.error("Notion archive_expense error (status %d): %s", resp.status_code, err_text)
+            return {"error": f"Gagal menghapus pengeluaran (status {resp.status_code})."}
+    except Exception as e:
+        logger.error("Error in archive_expense: %s", str(e))
+        return {"error": f"Gagal menghubungi Notion: {str(e)}"}
+
+
+async def update_expense(
+    page_id: str,
+    deskripsi: Optional[str] = None,
+    nominal: Optional[int] = None,
+    kategori: Optional[str] = None,
+    tanggal: Optional[str] = None,
+    toko: Optional[str] = None,
+    catatan: Optional[str] = None,
+) -> dict[str, Any]:
+    """Memperbarui properti halaman pengeluaran yang sudah ada (tanpa duplikat)."""
+    api_key = os.environ.get("NOTION_API_KEY", "").strip()
+    database_id = await _resolve_expense_db_id()
+    if not api_key or not database_id:
+        return {"error": "Notion pengeluaran belum dikonfigurasi."}
+    if not page_id:
+        return {"error": "page_id kosong."}
+
+    headers = _expense_headers()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            schema = await _inspect_expense_schema(client, database_id, headers)
+            properties: dict[str, Any] = {}
+            if deskripsi and schema.get("title"):
+                properties[schema["title"]] = {"title": [{"text": {"content": deskripsi.strip()[:120]}}]}
+            if nominal is not None and schema.get("nominal"):
+                try:
+                    properties[schema["nominal"]] = {"number": int(round(float(nominal)))}
+                except (TypeError, ValueError):
+                    pass
+            if kategori and schema.get("kategori"):
+                properties[schema["kategori"]] = _select_payload(schema.get("kategori_type"), kategori.strip())
+            if tanggal and schema.get("tanggal"):
+                properties[schema["tanggal"]] = {"date": {"start": tanggal[:10]}}
+            if toko is not None and schema.get("toko"):
+                properties[schema["toko"]] = {"rich_text": [{"type": "text", "text": {"content": toko.strip()[:200]}}]}
+            if catatan is not None and schema.get("catatan"):
+                properties[schema["catatan"]] = {"rich_text": [{"type": "text", "text": {"content": catatan.strip()[:1800]}}]}
+
+            if not properties:
+                return {"error": "Tidak ada perubahan properti."}
+
+            resp = await client.patch(
+                f"https://api.notion.com/v1/pages/{page_id}",
+                json={"properties": properties},
+                headers=headers,
+            )
+            if resp.status_code == 200:
+                return {"status": "success", "page_id": page_id}
+            err_text = resp.text[:200]
+            logger.error("Notion update_expense error (status %d): %s", resp.status_code, err_text)
+            return {"error": f"Gagal memperbarui pengeluaran (status {resp.status_code})."}
+    except Exception as e:
+        logger.error("Error in update_expense: %s", str(e))
+        return {"error": f"Gagal menghubungi Notion: {str(e)}"}
+
+
+async def check_expense_database() -> dict[str, Any]:
+    """
+    Cek kesiapan database pengeluaran (dipakai /pengeluaran config).
+    Returns {"configured": bool, "status": "ok|unconfigured|not_shared|error", ...}.
+    """
+    api_key = os.environ.get("NOTION_API_KEY", "").strip()
+    database_id = await _resolve_expense_db_id()
+    if not database_id:
+        return {"configured": False, "status": "unconfigured", "detail": "NOTION_EXPENSE_DATABASE_ID belum diset."}
+    if not api_key:
+        return {"configured": False, "status": "error", "detail": "NOTION_API_KEY belum diset."}
+
+    headers = _expense_headers()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"https://api.notion.com/v1/databases/{database_id}", headers=headers
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                title = ""
+                raw_title = data.get("title") or []
+                if raw_title and isinstance(raw_title[0], dict):
+                    title = raw_title[0].get("plain_text", "")
+                return {
+                    "configured": True,
+                    "status": "ok",
+                    "database_id": database_id,
+                    "title": title or "Keuangan Oline",
+                    "properties": list((data.get("properties") or {}).keys()),
+                }
+            if resp.status_code == 404:
+                return {
+                    "configured": True,
+                    "status": "not_shared",
+                    "database_id": database_id,
+                    "detail": "Database tidak ditemukan / belum dibagikan ke Integrasi Oline.",
+                }
+            return {
+                "configured": True,
+                "status": "error",
+                "database_id": database_id,
+                "detail": f"Status {resp.status_code}: {resp.text[:150]}",
+            }
+    except Exception as e:
+        logger.error("Error in check_expense_database: %s", str(e))
+        return {"configured": True, "status": "error", "detail": str(e)}
+
