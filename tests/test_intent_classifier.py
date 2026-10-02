@@ -80,6 +80,12 @@ class TestClearDirective(unittest.TestCase):
     def test_no_intent_never_directive(self):
         self.assertFalse(_is_clear_directive("cek cuaca surabaya", None))
 
+    def test_directive_panjang_diverifikasi_llm(self):
+        """Brief panjang (mis. landing page) tidak boleh lolos tanpa verifikasi LLM."""
+        long_brief = "Buatkan landing page " + "dengan bagian lengkap " * 15
+        self.assertFalse(_is_clear_directive(long_brief, "preview"))
+        self.assertTrue(_is_clear_directive("cek cuaca surabaya", "cuaca"))
+
 
 class TestClassifyMessage(unittest.IsolatedAsyncioTestCase):
 
@@ -191,6 +197,18 @@ class TestResolveIntent(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(res["mode"], "action")
             self.assertEqual(res["intent"], "cuaca")
             self.assertEqual(res["source"], "fallback")
+
+    async def test_long_directive_uses_classifier(self):
+        """Brief landing panjang diverifikasi classifier (bukan langsung keyword)."""
+        with patch("src.intent_classifier.classify_message", new_callable=AsyncMock) as mock_cls, \
+             patch("src.intent_classifier._audit", new_callable=AsyncMock), \
+             patch("src.intent_classifier._remember_topic", new_callable=AsyncMock):
+            mock_cls.return_value = {"mode": "action", "intent": "preview", "confidence": 0.95, "alasan": ""}
+            long_brief = "Buatkan landing page " + "detail lengkap " * 25
+            res = await resolve_intent(long_brief, 1, "preview")
+            self.assertTrue(mock_cls.called)
+            self.assertEqual(res["mode"], "action")
+            self.assertEqual(res["intent"], "preview")
 
 
 class TestResolveIntentDecision(unittest.IsolatedAsyncioTestCase):
