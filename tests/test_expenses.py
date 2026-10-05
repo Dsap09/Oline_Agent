@@ -17,10 +17,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["TELEGRAM_BOT_TOKEN"] = "test:token"
 
 from src.expenses import (  # noqa: E402
+    RECEIPT_VISION_PROMPT,
     build_confirm_text,
     build_recap_text,
     build_saved_text,
     categorize_local,
+    categorize_receipt,
+    compute_total_for_date,
     detect_expense_entry,
     format_rupiah,
     format_short_date,
@@ -30,6 +33,9 @@ from src.expenses import (  # noqa: E402
     parse_periode,
     parse_receipt_result,
     short_page_id,
+    today_iso,
+    total_label_for_date,
+    validate_receipt_draft,
 )
 
 
@@ -238,6 +244,234 @@ class TestStateKV(unittest.IsolatedAsyncioTestCase):
     @patch("src.kv.get_cache", new_callable=AsyncMock, return_value="1")
     async def test_duplikat(self, mock_get):
         self.assertTrue(await is_duplicate(123, "kopi", 25000, "2026-10-02"))
+
+
+class TestPromptStruk(unittest.TestCase):
+
+    def test_prompt_meminta_item_dan_total(self):
+        self.assertIn("items", RECEIPT_VISION_PROMPT)
+        self.assertIn("total_item", RECEIPT_VISION_PROMPT)
+        self.assertIn("total_belanja", RECEIPT_VISION_PROMPT)
+        self.assertIn("diskon", RECEIPT_VISION_PROMPT)
+
+
+class TestParseReceiptStrukV2(unittest.TestCase):
+
+    def test_json_lengkap_prioritas_total_belanja(self):
+        raw = json.dumps({
+            "toko": "Alfamidi Manyar Kartika",
+            "tanggal": "2026-10-05",
+            "jam": "00:54",
+            "items": [
+                {"nama": "AQUVIVA AIR 1.5L", "qty": 1, "harga": 6600, "subtotal": 6600},
+                {"nama": "WLS F VNL65ML", "qty": 1, "harga": 7000, "subtotal": 7000},
+            ],
+            "diskon": 500,
+            "total_item": 13600,
+            "total_belanja": 13100,
+            "metode_bayar": "qris",
+        })
+        result = parse_receipt_result(raw)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["nominal"], 13100)
+        self.assertEqual(result["subtotal"], 13600)
+        self.assertEqual(result["diskon"], 500)
+        self.assertEqual(result["jam"], "00:54")
+        self.assertEqual(result["deskripsi"], "Alfamidi Manyar Kartika")
+        self.assertEqual(len(result["detail_items"]), 2)
+        self.assertIn("AQUVIVA", result["catatan"])
+        self.assertIn("Diskon: -Rp500", result["catatan"])
+        self.assertEqual(result["peringatan"], [])
+
+    def test_hitung_total_belanja_dari_total_item_diskon(self):
+        raw = json.dumps({
+            "toko": "Toko A",
+            "items": [{"nama": "aqua", "qty": 2, "harga": 3000}],
+            "diskon": 1000,
+            "total_item": 6000,
+        })
+        result = parse_receipt_result(raw)
+        self.assertEqual(result["nominal"], 5000)
+        self.assertEqual(result["subtotal"], 6000)
+
+    def test_toko_numerik_ditolak_dan_fallback_item(self):
+        raw = json.dumps({"toko": "13100", "total": 0, "items": ["aqua 6600"]})
+        result = parse_receipt_result(raw)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["toko"], "")
+        self.assertEqual(result["nominal"], 6600)
+        self.assertEqual(result["deskripsi"], "aqua")
+
+    def test_tanggal_masa_depan_dikoreksi(self):
+        raw = json.dumps({
+            "toko": "Toko A",
+            "tanggal": "2099-01-01",
+            "total_belanja": 10000,
+            "items": [{"nama": "susu", "harga": 10000}],
+        })
+        result = parse_receipt_result(raw)
+        self.assertEqual(result["tanggal"], today_iso())
+        self.assertTrue(any("masa depan" in w for w in result["peringatan"]))
+
+    def test_format_tanggal_struk(self):
+        for raw_date in ("05/10/2026", "05-10-2026", "05 Oktober 2026"):
+            with self.subTest(raw_date=raw_date):
+                raw = json.dumps({
+                    "toko": "Toko A",
+                    "tanggal": raw_date,
+                    "total_belanja": 1000,
+                    "items": [{"nama": "x", "harga": 1000}],
+                })
+                result = parse_receipt_result(raw)
+                self.assertEqual(result["tanggal"], "2026-10-05")
+
+    def test_total_belanja_tanpa_item_beri_peringatan(self):
+        raw = json.dumps({"toko": "Toko A", "tanggal": "2026-10-05", "total_belanja": 9000})
+        result = parse_receipt_result(raw)
+        self.assertIsNotNone(result)
+        self.assertTrue(any("item" in w.lower() for w in result["peringatan"]))
+
+
+class TestKategoriStruk(unittest.TestCase):
+
+    def test_item_minuman_dominan(self):
+        items = [{"nama": "AQUVIVA AIR 1.5L"}, {"nama": "SUSU ULTRA 1L"}]
+        self.assertEqual(categorize_receipt("Alfamidi Manyar", items), "Makan & Minum")
+
+    def test_item_belanja(self):
+        self.assertEqual(categorize_receipt("", [{"nama": "SABUN LIFEBUOY"}]), "Belanja")
+
+    def test_fallback_toko(self):
+        self.assertEqual(categorize_receipt("Indomaret", []), "Belanja")
+
+    def test_ambigu_none(self):
+        self.assertIsNone(categorize_receipt("", [{"nama": "XYZ ABC"}]))
+
+
+class TestValidasiStruk(unittest.TestCase):
+
+    def test_nominal_nol_tanggal_masa_depan(self):
+        warnings = validate_receipt_draft({
+            "nominal": 0,
+            "tanggal": "2099-01-01",
+            "detail_items": [],
+        })
+        self.assertTrue(any("Nominal" in w for w in warnings))
+        self.assertTrue(any("masa depan" in w for w in warnings))
+        self.assertTrue(any("Item" in w for w in warnings))
+
+    def test_valid_tanpa_peringatan(self):
+        warnings = validate_receipt_draft({
+            "nominal": 13100,
+            "tanggal": "2026-10-05",
+            "detail_items": [{"nama": "aqua"}],
+            "peringatan": [],
+        })
+        self.assertEqual(warnings, [])
+
+
+class TestFormatStruk(unittest.TestCase):
+
+    def test_confirm_struk_format_baru(self):
+        draft = {"sumber": "struk", "items": [{
+            "nominal": 13100,
+            "deskripsi": "Alfamidi Manyar Kartika",
+            "toko": "Alfamidi Manyar Kartika",
+            "tanggal": "2026-10-05",
+            "waktu": "00:54",
+            "kategori": "Makan & Minum",
+            "diskon": 500,
+            "detail_items": [
+                {"nama": "AQUVIVA AIR 1.5L", "qty": 1, "subtotal": 6600},
+                {"nama": "WLS F VNL65ML", "qty": 1, "subtotal": 7000},
+            ],
+        }]}
+        text = build_confirm_text(draft)
+        self.assertIn("Struk terbaca", text)
+        self.assertIn("🏪 Toko: Alfamidi Manyar Kartika", text)
+        self.assertIn("00:54", text)
+        self.assertIn("AQUVIVA", text)
+        self.assertIn("Diskon: -Rp500", text)
+        self.assertIn("Total: Rp13.100", text)
+
+    def test_saved_struk_format_baru(self):
+        saved = [{
+            "sumber": "struk",
+            "nominal": 13100,
+            "kategori": "Makan & Minum",
+            "toko": "Alfamidi Manyar Kartika",
+            "tanggal": "2026-10-05",
+            "waktu": "00:54",
+            "detail_items": [{"nama": "aqua"}],
+        }]
+        text = build_saved_text(saved, 13100, total_label="Total hari ini")
+        self.assertIn("✅ Tercatat!", text)
+        self.assertIn("🏪 Alfamidi Manyar Kartika", text)
+        self.assertIn("💰 Rp13.100", text)
+        self.assertIn("Total hari ini: Rp13.100", text)
+
+    def test_label_total_tanggal_struk(self):
+        self.assertEqual(total_label_for_date(today_iso()), "Total hari ini")
+        self.assertEqual(total_label_for_date("2026-10-04"), "Total 04 Okt 2026")
+
+
+class TestRekapTotal(unittest.IsolatedAsyncioTestCase):
+
+    @patch("src.kv.set_cache", new_callable=AsyncMock, return_value=True)
+    @patch("src.notion.query_expenses", new_callable=AsyncMock)
+    @patch("src.expenses.get_daily_total", new_callable=AsyncMock, return_value=0)
+    async def test_total_dari_notion(self, mock_kv_total, mock_query, mock_set_cache):
+        mock_query.return_value = [{"nominal": 13100}, {"nominal": 500}]
+        total = await compute_total_for_date(123, "2026-10-05")
+        self.assertEqual(total, 13600)
+
+    @patch("src.kv.set_cache", new_callable=AsyncMock, return_value=True)
+    @patch("src.notion.query_expenses", new_callable=AsyncMock, return_value=[])
+    @patch("src.expenses.get_daily_total", new_callable=AsyncMock, return_value=25000)
+    async def test_fallback_kv_bila_notion_kosong(self, mock_kv_total, mock_query, mock_set_cache):
+        total = await compute_total_for_date(123, "2026-10-05")
+        self.assertEqual(total, 25000)
+
+
+class TestKoreksiManualStruk(unittest.IsolatedAsyncioTestCase):
+
+    @patch("src.bot._show_expense_confirmation", new_callable=AsyncMock)
+    @patch("src.kv.del_cache", new_callable=AsyncMock, return_value=True)
+    @patch("src.kv.set_cache", new_callable=AsyncMock, return_value=True)
+    @patch("src.kv.get_cache", new_callable=AsyncMock)
+    async def test_isi_manual_total_toko_item(
+        self, mock_get, mock_set, mock_del, mock_show
+    ):
+        from src.bot import _handle_expense_correction
+
+        draft = {
+            "items": [{
+                "nominal": 0,
+                "deskripsi": "",
+                "kategori": None,
+                "tanggal": "2026-10-05",
+                "toko": "",
+                "detail_items": [],
+            }],
+            "sumber": "struk",
+            "manual": True,
+        }
+        mock_get.return_value = json.dumps(draft)
+        destination = AsyncMock()
+
+        handled = await _handle_expense_correction(
+            destination, 123,
+            "total 13100 toko Alfamidi item aqua 6600, susu 7000",
+        )
+
+        self.assertTrue(handled)
+        saved = json.loads(mock_set.call_args[0][1])
+        item = saved["items"][0]
+        self.assertEqual(item["nominal"], 13100)
+        self.assertEqual(item["toko"], "Alfamidi")
+        self.assertEqual(item["deskripsi"], "Alfamidi")
+        self.assertEqual(len(item["detail_items"]), 2)
+        self.assertIn("aqua", item["catatan"])
 
 
 class TestIntentDanRegistry(unittest.TestCase):

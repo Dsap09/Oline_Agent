@@ -55,6 +55,12 @@ CATEGORY_KEYWORDS = {
         "geprek", "seblak", "boba", "es", "jus", "roti", "kue", "gofood",
         "grabfood", "shopeefood", "makanan", "minuman", "catering", "catering",
         "indomie", "warteg", "padang", "pizza", "burger", "sushi", "dimsum",
+        # Item minimarket (struk) yang umum:
+        "air mineral", "air putih", "air galon", "galon", "aqua", "aquviva",
+        "le minerale", "cleo", "susu", "ultra", "indomilk", "cimory", "yogurt",
+        "yoghurt", "biskuit", "wafer", "chitato", "oreo", "coklat", "chocolate",
+        "permen", "es krim", "ice cream", "pocari", "mizone", "isotonik",
+        "teh botol", "juice", "sereal", "cereal", "keju", "mentega", "telur",
     ],
     "Transport": [
         "grab", "gojek", "ojek", "ojol", "taksi", "taxi", "bensin", "bbm",
@@ -71,7 +77,7 @@ CATEGORY_KEYWORDS = {
         "tisu", "detergen", "perlengkapan",
     ],
     "Rumah": [
-        "listrik", "pln", "air", "pdam", "internet", "wifi", "indihome",
+        "listrik", "pln", "pdam", "tagihan air", "air pdam", "internet", "wifi", "indihome",
         "telkom", "pulsa", "kuota internet", "gas", "elpiji", "sewa", "kontrakan",
         "kos", "iuran", "sampah", "keamanan", "perbaikan rumah", "servis ac",
         "token listrik", "tagihan", "bpjs", "asuransi",
@@ -131,13 +137,26 @@ _FILLER_WORDS = [
 ]
 
 RECEIPT_VISION_PROMPT = (
-    "Baca struk/nota belanja ini dengan teliti. Ekstrak data berikut dan balas "
-    "HANYA dengan JSON valid tanpa markdown, dengan skema: "
-    '{"total": <angka total pembayaran tanpa titik, mis. 87500>, '
-    '"toko": "<nama toko, kosongkan bila tidak ada>", '
-    '"tanggal": "<YYYY-MM-DD, kosongkan bila tidak ada>", '
-    '"items": ["<daftar item singkat>"]}. '
-    "Jika bukan struk belanja, balas {\"total\": 0}."
+    "Baca foto struk/nota belanja ini dengan sangat teliti. Balas HANYA satu objek "
+    "JSON valid tanpa markdown/penjelasan, dengan skema: "
+    '{"toko": "<nama toko>", "tanggal": "YYYY-MM-DD", "jam": "HH:MM", '
+    '"items": [{"nama": "<nama item>", "qty": <angka>, "harga": <harga satuan>, '
+    '"subtotal": <qty x harga>}], '
+    '"diskon": <total potongan, 0 bila tidak ada>, '
+    '"total_item": <jumlah sebelum diskon>, '
+    '"total_belanja": <jumlah yang dibayar setelah diskon>, '
+    '"metode_bayar": "<tunai/qris/debit>", "kasir": "<nama>"}. '
+    "PENTING: tulis SEMUA baris item beserta harganya, jangan diringkas; "
+    "total_item = jumlah sebelum diskon; total_belanja = yang benar-benar dibayar "
+    "setelah diskon. Jika bukan struk belanja, balas {\"total_belanja\": 0}."
+)
+
+RECEIPT_ITEMS_PROMPT = (
+    "Baca semua baris item pada struk belanja ini. Balas HANYA JSON valid: "
+    '{"items": [{"nama": "<nama item>", "qty": <angka>, "harga": <harga satuan>, '
+    '"subtotal": <subtotal>}], "diskon": <potongan, 0 bila tidak ada>, '
+    '"total_item": <jumlah sebelum diskon>, "total_belanja": <jumlah dibayar>}. '
+    "Sertakan semua item, jangan diringkas."
 )
 
 # Kata kunci caption foto yang menandakan struk belanja.
@@ -205,7 +224,7 @@ def format_short_date(iso_date: str) -> str:
     """YYYY-MM-DD -> '30 Sep 2026'. Mengembalikan input apa adanya bila gagal."""
     try:
         dt = datetime.strptime((iso_date or "")[:10], "%Y-%m-%d")
-        return f"{dt.day} {_MONTHS_ID.get(dt.month, dt.strftime('%b'))} {dt.year}"
+        return f"{dt.day:02d} {_MONTHS_ID.get(dt.month, dt.strftime('%b'))} {dt.year}"
     except (ValueError, TypeError):
         return iso_date or "-"
 
@@ -418,16 +437,33 @@ def detect_expense_entry(text: str) -> Optional[dict]:
 
 # --- Kategori otomatis ---
 
+def _keyword_hit(low: str, kw: str) -> bool:
+    """Cocokkan keyword dengan batas kata + sufiks ringan Indonesia (-an/-nya)."""
+    return re.search(rf"\b{re.escape(kw)}(?:an|nya|ku|mu)?\b", low) is not None
+
+
+def _category_scores(text: str) -> dict[str, int]:
+    """Hitung jumlah keyword yang cocok per kategori dari sebuah teks."""
+    scores: dict[str, int] = {}
+    low = (text or "").lower()
+    if not low:
+        return scores
+    for category, keywords in CATEGORY_KEYWORDS.items():
+        hits = sum(1 for kw in keywords if _keyword_hit(low, kw))
+        if hits:
+            scores[category] = hits
+    return scores
+
+
 def categorize_local(deskripsi: str) -> Optional[str]:
     """Kategori via map keyword lokal. None bila tidak ada yang cocok."""
     if not deskripsi:
         return None
-    low = deskripsi.lower()
-    for category, keywords in CATEGORY_KEYWORDS.items():
-        for kw in keywords:
-            if re.search(rf"\b{re.escape(kw)}\b", low):
-                return category
-    return None
+    scores = _category_scores(deskripsi)
+    if not scores:
+        return None
+    priority = {cat: idx for idx, cat in enumerate(CATEGORIES)}
+    return max(scores.items(), key=lambda kv: (kv[1], -priority.get(kv[0], 99)))[0]
 
 
 _CATEGORIZE_SYSTEM = (
@@ -494,6 +530,47 @@ def _match_category(raw: str) -> Optional[str]:
     return None
 
 
+RECEIPT_DEFAULT_CATEGORY = "Belanja"
+
+
+def categorize_receipt(toko: str, items: list[dict]) -> Optional[str]:
+    """
+    Kategori struk berbasis item (bobot 2) + nama toko (bobot 1).
+    None bila tidak ada keyword lokal yang cocok.
+    """
+    scores: dict[str, int] = {}
+    for item in items or []:
+        for cat, sc in _category_scores(str(item.get("nama") or "")).items():
+            scores[cat] = scores.get(cat, 0) + sc * 2
+    for cat, sc in _category_scores(toko or "").items():
+        scores[cat] = scores.get(cat, 0) + sc
+    if not scores:
+        return None
+    priority = {cat: idx for idx, cat in enumerate(CATEGORIES)}
+    return max(scores.items(), key=lambda kv: (kv[1], -priority.get(kv[0], 99)))[0]
+
+
+async def categorize_receipt_async(toko: str, items: list[dict]) -> str:
+    """
+    Kategori struk: keyword item/toko dulu, fallback AI, default 'Belanja'
+    (struk belanja tidak pernah masuk 'Lain-lain').
+    """
+    local = categorize_receipt(toko, items)
+    if local:
+        return local
+    combined = " ".join(
+        filter(None, [toko or ""] + [str(i.get("nama") or "") for i in (items or [])])
+    ).strip()[:300]
+    if combined:
+        try:
+            cat = await categorize_expense(combined)
+            if cat and cat != "Lain-lain":
+                return cat
+        except Exception as e:
+            logger.warning("Kategori struk AI gagal: %s", str(e))
+    return RECEIPT_DEFAULT_CATEGORY
+
+
 # --- Parsing hasil vision struk ---
 
 def _extract_json_object(raw: str) -> Optional[dict]:
@@ -518,14 +595,37 @@ def _extract_json_object(raw: str) -> Optional[dict]:
     return None
 
 
+_MONTH_NAME_MAP = {
+    "januari": "January", "februari": "February", "maret": "March",
+    "april": "April", "mei": "May", "juni": "June", "juli": "July",
+    "agustus": "August", "september": "September", "oktober": "October",
+    "november": "November", "desember": "December",
+    "jan": "Jan", "feb": "Feb", "mar": "Mar", "apr": "Apr", "mei": "May",
+    "jun": "Jun", "jul": "Jul", "agu": "Aug", "ags": "Aug", "okt": "Oct",
+    "nov": "Nov", "des": "Dec",
+}
+
+
 def _normalize_receipt_date(raw: Any) -> str:
     """Terima berbagai format tanggal struk, kembalikan YYYY-MM-DD (fallback hari ini)."""
     if not raw:
         return today_iso()
     text = str(raw).strip()
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d %B %Y", "%d %b %Y"):
+    text = text.replace(".", "-") if re.fullmatch(r"\d{1,2}[.-]\d{1,2}[.-]\d{4}", text) else text
+    words = text.split()
+    for idx, word in enumerate(words):
+        clean = re.sub(r"[^\w]", "", word).lower()
+        if clean in _MONTH_NAME_MAP:
+            words[idx] = _MONTH_NAME_MAP[clean]
+    text = " ".join(words)
+
+    for fmt in (
+        "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y",
+        "%d/%m/%y", "%d-%m-%y", "%d.%m.%y",
+        "%d %B %Y", "%d %b %Y", "%d %B %y", "%d %b %y",
+    ):
         try:
-            return datetime.strptime(text[:11], fmt).strftime("%Y-%m-%d")
+            return datetime.strptime(text[:20].strip(), fmt).strftime("%Y-%m-%d")
         except (ValueError, TypeError):
             continue
     match = re.search(r"(\d{4})-(\d{2})-(\d{2})", text)
@@ -534,54 +634,355 @@ def _normalize_receipt_date(raw: Any) -> str:
     return today_iso()
 
 
+def _normalize_receipt_time(raw: Any) -> str:
+    """Terima 'HH:MM' / 'HH.MM' dari struk; kosong bila tidak valid."""
+    match = re.search(r"(\d{1,2})[:.](\d{2})", str(raw or ""))
+    if not match:
+        return ""
+    jam, menit = int(match.group(1)), int(match.group(2))
+    if 0 <= jam <= 23 and 0 <= menit <= 59:
+        return f"{jam:02d}:{menit:02d}"
+    return ""
+
+
+def _amount_from_any(value: Any) -> Optional[int]:
+    """Konversi nilai JSON (angka/teks) menjadi nominal int Rupiah."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            result = int(round(float(value)))
+            return result if result > 0 else None
+        except (TypeError, ValueError):
+            return None
+    return parse_amount(str(value))
+
+
+def _sanitize_store(raw: Any) -> str:
+    """Nama toko valid: bukan angka, mengandung minimal 2 huruf."""
+    toko = re.sub(r"\s+", " ", str(raw or "")).strip()[:80]
+    if not toko or re.fullmatch(r"[\d.,\s:/\\-]+", toko):
+        return ""
+    if len(re.sub(r"[^A-Za-z]", "", toko)) < 2:
+        return ""
+    return toko
+
+
+def _normalize_receipt_items(raw_items: Any) -> list[dict]:
+    """Normalisasi daftar item vision (dict/string) menjadi list dict terstruktur."""
+    if isinstance(raw_items, dict):
+        raw_items = [raw_items]
+    if isinstance(raw_items, str):
+        raw_items = [line.strip() for line in re.split(r"[\n;]", raw_items) if line.strip()]
+    if not isinstance(raw_items, list):
+        return []
+
+    items: list[dict] = []
+    for raw in raw_items[:30]:
+        if isinstance(raw, dict):
+            nama = str(
+                raw.get("nama") or raw.get("name") or raw.get("item") or ""
+            ).strip()
+            qty_raw = raw.get("qty") or raw.get("jumlah") or raw.get("quantity") or 1
+            try:
+                qty = float(str(qty_raw).replace(",", "."))
+            except (TypeError, ValueError):
+                qty = 1.0
+            if qty <= 0:
+                qty = 1.0
+            harga = _amount_from_any(
+                raw.get("harga") if raw.get("harga") is not None else raw.get("price")
+            )
+            if harga is None:
+                harga = _amount_from_any(raw.get("harga_satuan"))
+            subtotal = _amount_from_any(
+                raw.get("subtotal") if raw.get("subtotal") is not None else raw.get("total")
+            )
+            if subtotal is None and harga is not None:
+                subtotal = int(round(harga * qty))
+            if harga is None and subtotal is not None:
+                harga = int(round(subtotal / qty)) if qty else subtotal
+            if not nama and not subtotal:
+                continue
+            items.append({
+                "nama": nama[:60] or "Item",
+                "qty": qty,
+                "harga": harga,
+                "subtotal": subtotal,
+            })
+        else:
+            text = str(raw).strip()
+            if not text:
+                continue
+            price_match = re.search(r"([\d][\d.,]*)\s*$", text)
+            subtotal = parse_amount(price_match.group(1)) if price_match else None
+            nama = text[:price_match.start()] if price_match else text
+            nama = re.sub(r"[\s\-–—x*:]+$", "", nama).strip()
+            qty_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:x|×)", text, re.IGNORECASE)
+            try:
+                qty = float(qty_match.group(1).replace(",", ".")) if qty_match else 1.0
+            except (TypeError, ValueError):
+                qty = 1.0
+            items.append({
+                "nama": (nama or text)[:60],
+                "qty": qty if qty > 0 else 1.0,
+                "harga": None,
+                "subtotal": subtotal,
+            })
+    return items
+
+
+def format_qty(qty: Any) -> str:
+    """1.0 -> '1', 1.5 -> '1.5'."""
+    try:
+        value = float(qty)
+    except (TypeError, ValueError):
+        return "1"
+    return str(int(value)) if value == int(value) else str(round(value, 2))
+
+
+def format_receipt_items_chat(items: list[dict], limit: int = 3) -> list[str]:
+    """Baris item untuk bubble Telegram (maks `limit`, sisanya diringkas)."""
+    lines = []
+    for item in (items or [])[:limit]:
+        harga = item.get("subtotal") or item.get("harga") or 0
+        lines.append(
+            f"• {item.get('nama') or 'Item'} ({format_qty(item.get('qty'))}x) — "
+            f"{format_rupiah(harga)}"
+        )
+    if len(items or []) > limit:
+        lines.append(f"• … +{len(items) - limit} item lain")
+    return lines
+
+
+def format_receipt_catatan(
+    items: list[dict],
+    diskon: Optional[int] = None,
+    total_item: Optional[int] = None,
+    metode_bayar: str = "",
+    max_chars: int = 1800,
+) -> str:
+    """Susun catatan terstruktur untuk properti 'Catatan' Notion (maks 1800 char)."""
+    if not items and not diskon and not total_item and not metode_bayar:
+        return ""
+    lines = ["Items:"]
+    shown = 0
+    for item in items or []:
+        harga = item.get("subtotal") or item.get("harga") or 0
+        line = (
+            f"- {item.get('nama') or 'Item'} ({format_qty(item.get('qty'))}x) — "
+            f"{format_rupiah(harga)}"
+        )
+        if sum(len(existing) + 1 for existing in lines) + len(line) > max_chars - 100:
+            lines.append(f"- … {len(items) - shown} item lainnya")
+            break
+        lines.append(line)
+        shown += 1
+    if diskon:
+        lines.append(f"Diskon: -{format_rupiah(diskon)}")
+    if total_item:
+        lines.append(f"Total Item: {format_rupiah(total_item)}")
+    if metode_bayar:
+        lines.append(f"Pembayaran: {metode_bayar}")
+    return "\n".join(lines)[:max_chars]
+
+
+def _regex_total(raw: str) -> Optional[int]:
+    """Fallback regex: prioritas 'total belanja' lalu 'grand total', hindari 'total item'."""
+    text = (raw or "").lower()
+    patterns = (
+        r"total\s*belanja[^\d]{0,20}([\d.,]+)",
+        r"grand\s*total[^\d]{0,20}([\d.,]+)",
+        r"total\s*(?:bayar|pembayaran|akhir)[^\d]{0,20}([\d.,]+)",
+        r"jumlah\s*(?:bayar|belanja|total)[^\d]{0,20}([\d.,]+)",
+        r"total(?!\s*(?:item|qty|harga))[^\d]{0,20}([\d.,]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            nominal = parse_amount(match.group(1))
+            if nominal:
+                return nominal
+    match = re.search(r"rp\.?\s*([\d.,]+)", text)
+    if match:
+        return parse_amount(match.group(1))
+    return None
+
+
 def parse_receipt_result(raw: str) -> Optional[dict]:
     """
-    Parse output Moondream menjadi draft pengeluaran.
-    Returns dict {nominal, deskripsi, toko, tanggal, catatan, sumber} atau None.
+    Parse output Moondream menjadi draft pengeluaran terstruktur.
+    Nominal utama = total belanja (setelah diskon), fallback total item.
+    Returns dict {nominal, deskripsi, toko, tanggal, jam, catatan,
+    detail_items, diskon, subtotal, confidence, peringatan, sumber} atau None.
     """
     data = _extract_json_object(raw)
-
-    nominal = None
+    peringatan: list[str] = []
     toko = ""
     tanggal_raw = ""
-    items: list[str] = []
+    waktu = ""
+    metode_bayar = ""
+    items: list[dict] = []
+    diskon: Optional[int] = None
+    total_item: Optional[int] = None
+    total_belanja: Optional[int] = None
 
     if data:
-        nominal = parse_amount(str(data.get("total") or data.get("nominal") or data.get("total_pembayaran") or ""))
-        toko = str(data.get("toko") or data.get("store") or "").strip()[:80]
+        toko = _sanitize_store(data.get("toko") or data.get("store") or data.get("merchant"))
         tanggal_raw = data.get("tanggal") or data.get("date") or ""
-        raw_items = data.get("items") or data.get("item") or []
-        if isinstance(raw_items, list):
-            items = [str(i).strip()[:60] for i in raw_items if str(i).strip()][:10]
-        elif isinstance(raw_items, str) and raw_items.strip():
-            items = [raw_items.strip()[:60]]
+        waktu = _normalize_receipt_time(data.get("jam") or data.get("waktu") or data.get("time"))
+        items = _normalize_receipt_items(data.get("items") or data.get("item") or [])
+        for key in ("diskon", "discount", "potongan", "potongan_harga", "disc"):
+            diskon = _amount_from_any(data.get(key))
+            if diskon is not None:
+                diskon = abs(diskon)
+                break
+        for key in ("total_item", "total_sebelum_diskon", "subtotal", "sub_total"):
+            total_item = _amount_from_any(data.get(key))
+            if total_item is not None:
+                break
+        for key in (
+            "total_belanja", "total_bayar", "total_pembayaran", "grand_total",
+            "grandtotal", "jumlah_bayar", "total_akhir", "total", "nominal",
+        ):
+            total_belanja = _amount_from_any(data.get(key))
+            if total_belanja is not None:
+                break
+        metode_bayar = str(
+            data.get("metode_bayar") or data.get("metode_pembayaran") or data.get("payment") or ""
+        ).strip()[:40]
 
-    if not nominal:
-        # Fallback regex: cari angka di baris "total".
-        match = re.search(r"(?:total|jumlah|grand\s*total)[^\d]{0,20}([\d.,]+)", (raw or "").lower())
-        if match:
-            nominal = parse_amount(match.group(1))
-    if not nominal:
-        match = re.search(r"rp\.?\s*([\d.,]+)", (raw or "").lower())
-        if match:
-            nominal = parse_amount(match.group(1))
-    if not nominal:
+    items_sum = sum(int(i.get("subtotal") or 0) for i in items)
+    if total_item is None and items_sum > 0:
+        total_item = items_sum
+    if total_belanja is None:
+        if total_item is not None:
+            total_belanja = max(total_item - (diskon or 0), 0) or total_item
+        elif items_sum > 0:
+            total_belanja = max(items_sum - (diskon or 0), 0) or items_sum
+    if not total_belanja:
+        total_belanja = _regex_total(raw)
+    if not total_belanja:
         return None
 
-    if not toko:
-        match = re.search(r"(?:toko|store|toserba|minimarket|market)[:\s]+([^\n,]{2,50})", (raw or ""), re.IGNORECASE)
-        if match:
-            toko = match.group(1).strip()[:80]
+    if total_item and diskon and abs((total_item - diskon) - total_belanja) > 100:
+        peringatan.append("Total belanja tidak sama dengan total item - diskon, mohon dicek")
+    if not items:
+        peringatan.append("Rincian item tidak terbaca")
+    if diskon and not total_item and items_sum == 0:
+        peringatan.append("Diskon terbaca tanpa rincian item")
 
-    deskripsi = toko or (items[0] if items else "Belanja struk")
+    tanggal = _normalize_receipt_date(tanggal_raw)
+    try:
+        if datetime.strptime(tanggal, "%Y-%m-%d").date() > wib_now().date():
+            peringatan.append("Tanggal struk di masa depan, memakai tanggal hari ini")
+            tanggal = today_iso()
+    except (ValueError, TypeError):
+        tanggal = today_iso()
+
+    if not toko:
+        match = re.search(
+            r"(?:toko|store|toserba|minimarket|market)[:\s]+([^\n,]{2,50})",
+            raw or "", re.IGNORECASE,
+        )
+        if match:
+            toko = _sanitize_store(match.group(1))
+
+    catatan = format_receipt_catatan(items, diskon, total_item, metode_bayar)
+    deskripsi = toko or (items[0]["nama"] if items else "Belanja struk")
+
+    if data and items:
+        confidence = 0.95
+    elif data:
+        confidence = 0.8
+    else:
+        confidence = 0.65
+
     return {
-        "nominal": nominal,
+        "nominal": total_belanja,
         "deskripsi": deskripsi[:80],
         "toko": toko,
-        "tanggal": _normalize_receipt_date(tanggal_raw),
-        "catatan": "; ".join(items)[:500],
+        "tanggal": tanggal,
+        "jam": waktu,
+        "catatan": catatan,
+        "detail_items": items,
+        "diskon": diskon,
+        "subtotal": total_item,
+        "metode_bayar": metode_bayar,
+        "confidence": confidence,
+        "peringatan": peringatan,
         "sumber": "struk",
     }
+
+
+MAX_RECEIPT_NOMINAL = 1_000_000_000
+
+
+def validate_receipt_draft(item: dict) -> list[str]:
+    """
+    Validasi wajib sebelum simpan struk. Mengembalikan daftar peringatan
+    (bukan blocker; user tetap bisa Simpan/Edit lewat konfirmasi).
+    """
+    warnings = list(item.get("peringatan") or [])
+    try:
+        nominal = int(item.get("nominal") or 0)
+    except (TypeError, ValueError):
+        nominal = 0
+    if nominal <= 0:
+        warnings.append("Nominal tidak terbaca / nol")
+    elif nominal > MAX_RECEIPT_NOMINAL:
+        warnings.append("Nominal tidak wajar (lebih dari Rp1 miliar)")
+    tanggal = (item.get("tanggal") or today_iso())[:10]
+    try:
+        if datetime.strptime(tanggal, "%Y-%m-%d").date() > wib_now().date():
+            warnings.append("Tanggal di masa depan")
+    except (ValueError, TypeError):
+        warnings.append("Tanggal tidak valid")
+    if not item.get("detail_items") and not any(
+        "item" in warning.lower() for warning in warnings
+    ):
+        warnings.append("Item tidak terdeteksi")
+    return warnings
+
+
+async def compute_total_for_date(chat_id: int, date_iso: Optional[str] = None) -> int:
+    """
+    Total pengeluaran akurat untuk satu tanggal.
+    Sumber kebenaran = query Notion ulang; fallback KV bila Notion kosong/gagal.
+    """
+    date_str = (date_iso or today_iso())[:10]
+    total = 0
+    try:
+        from src.notion import query_expenses
+
+        entries = await query_expenses(start_date=date_str, end_date=date_str)
+        total = sum(int(e.get("nominal") or 0) for e in entries)
+    except Exception as e:
+        logger.warning("Gagal query Notion untuk total %s: %s", date_str, str(e))
+        total = 0
+
+    if total > 0:
+        try:
+            from src.kv import set_cache
+
+            await set_cache(
+                f"{TOTAL_PREFIX}:{chat_id}:{date_str}", str(total), ttl_seconds=TOTAL_TTL
+            )
+        except Exception:
+            pass
+        return total
+
+    return await get_daily_total(chat_id, date_str)
+
+
+def total_label_for_date(date_iso: Optional[str]) -> str:
+    """Label total: 'Total hari ini' atau 'Total 04 Okt 2026'."""
+    date_str = (date_iso or today_iso())[:10]
+    if date_str == today_iso():
+        return "Total hari ini"
+    return f"Total {format_short_date(date_str)}"
 
 
 # --- Pengaturan user (KV) ---
@@ -749,14 +1150,24 @@ async def log_expense_action(chat_id: int, action: str, data: dict) -> None:
         logs = json.loads(raw) if raw else []
         if not isinstance(logs, list):
             logs = []
-        logs.append({
+        entry = {
             "waktu": wib_now().strftime("%Y-%m-%d %H:%M:%S"),
             "aksi": action,
             "nominal": data.get("nominal"),
             "kategori": data.get("kategori"),
             "sumber": data.get("sumber"),
             "deskripsi": (data.get("deskripsi") or "")[:80],
-        })
+        }
+        # Audit khusus scan struk (ID foto saja, bukan gambarnya).
+        if data.get("file_id"):
+            entry["file_id"] = str(data["file_id"])[:64]
+        if data.get("vision_raw") is not None:
+            entry["vision_raw"] = str(data["vision_raw"])[:800]
+        if data.get("items_count") is not None:
+            entry["items_count"] = int(data["items_count"])
+        if data.get("peringatan"):
+            entry["peringatan"] = [str(w)[:120] for w in data["peringatan"]][:10]
+        logs.append(entry)
         await set_cache(key, json.dumps(logs[-LOG_MAX:], ensure_ascii=False), ttl_seconds=LOG_TTL)
     except Exception as e:
         logger.warning("Gagal menulis audit log pengeluaran: %s", str(e))
@@ -858,19 +1269,37 @@ def item_line(item: dict) -> str:
     return line
 
 
-def build_saved_text(saved: list[dict], total_today: int, skipped: int = 0, failed: int = 0) -> str:
-    if len(saved) == 1:
+def build_saved_text(
+    saved: list[dict],
+    total_today: int,
+    skipped: int = 0,
+    failed: int = 0,
+    total_label: str = "Total hari ini",
+) -> str:
+    lines: list[str] = []
+    if len(saved) == 1 and (saved[0].get("sumber") == "struk" or saved[0].get("detail_items")):
         item = saved[0]
-        head = f"✅ Tercatat: {item_line(item)}"
+        lines.append("✅ Tercatat!")
+        if item.get("toko"):
+            lines.append(f"\n🏪 {item['toko']}")
+        lines.append(f"💰 {format_rupiah(item.get('nominal'))}")
+        if item.get("kategori"):
+            emoji = CATEGORY_EMOJI.get(item["kategori"], "📦")
+            lines.append(f"{emoji} {item['kategori']}")
+        tanggal = format_short_date(item.get("tanggal") or today_iso())
+        waktu = item.get("waktu") or ""
+        lines.append(f"📅 {tanggal}" + (f", {waktu}" if waktu else ""))
+    elif len(saved) == 1:
+        lines.append(f"✅ Tercatat: {item_line(saved[0])}")
     else:
-        head = "✅ Tercatat:\n" + "\n".join(f"• {item_line(i)}" for i in saved)
+        lines.append("✅ Tercatat:\n" + "\n".join(f"• {item_line(i)}" for i in saved))
 
-    lines = [head]
     if skipped:
         lines.append(f"⚠️ {skipped} entri duplikat dilewati.")
     if failed:
         lines.append(f"⚠️ {failed} entri gagal disimpan (dicadangkan lokal, akan dicoba lagi).")
-    lines.append(f"Total hari ini: {format_rupiah(total_today)}")
+    lines.append("")
+    lines.append(f"{total_label}: {format_rupiah(total_today)}")
     return "\n".join(lines)
 
 
@@ -880,15 +1309,27 @@ def build_confirm_text(draft: dict) -> str:
 
     if sumber == "struk" and len(items) == 1:
         item = items[0]
-        lines = [
-            "📸 Struk terbaca:",
-            f"• Total: {format_rupiah(item.get('nominal'))}",
-        ]
+        lines = ["📸 Struk terbaca:"]
         if item.get("toko"):
-            lines.append(f"• Toko: {item['toko']}")
-        lines.append(f"• Tanggal: {format_short_date(item.get('tanggal') or today_iso())}")
+            lines.append(f"\n🏪 Toko: {item['toko']}")
+        tanggal = format_short_date(item.get("tanggal") or today_iso())
+        waktu = item.get("waktu") or ""
+        lines.append(f"📅 Tanggal: {tanggal}" + (f", {waktu}" if waktu else ""))
+        detail = item.get("detail_items") or []
+        if detail:
+            lines.append("\n🛒 Item:")
+            lines.extend(format_receipt_items_chat(detail))
+        elif item.get("catatan"):
+            lines.append("\n🛒 Item:")
+            lines.extend(f"• {line}" for line in item["catatan"].splitlines()[:4])
+        if item.get("diskon"):
+            lines.append(f"\n💸 Diskon: -{format_rupiah(item['diskon'])}")
+        lines.append(f"💰 Total: {format_rupiah(item.get('nominal'))}")
         if item.get("kategori"):
-            lines.append(f"• Kategori: {CATEGORY_EMOJI.get(item['kategori'], '📦')} {item['kategori']}")
+            emoji = CATEGORY_EMOJI.get(item["kategori"], "📦")
+            lines.append(f"\n{emoji} Kategori: {item['kategori']}")
+        for warning in item.get("peringatan") or []:
+            lines.append(f"⚠️ {warning}")
         return "\n".join(lines)
 
     if len(items) == 1:

@@ -1153,7 +1153,9 @@ EXPENSE_USAGE_TEXT = (
     "• /pengeluaran cari <kata>\n"
     "• /pengeluaran hapus <id>\n"
     "• /pengeluaran config — pengaturan\n\n"
-    "Scan struk: kirim foto + caption \"struk\"."
+    "Scan struk: kirim foto + caption \"struk\".\n"
+    "Kalau struk gagal terbaca, balas manual:\n"
+    "total 13100 toko Alfamidi item aqua 6600, susu 7000"
 )
 
 
@@ -1349,13 +1351,18 @@ async def _dispatch_expense_command(
 
 async def _finalize_items(chat_id: int, items: list[dict]) -> list[dict]:
     """Lengkapi kategori tiap item (lokal -> AI fallback) sebelum disimpan."""
-    from src.expenses import categorize_expense
+    from src.expenses import categorize_expense, categorize_receipt_async
 
     result = []
     for item in items:
-        kategori = item.get("kategori") or await categorize_expense(
-            item.get("deskripsi", "")
-        )
+        kategori = item.get("kategori")
+        if not kategori:
+            if item.get("detail_items"):
+                kategori = await categorize_receipt_async(
+                    item.get("toko", ""), item.get("detail_items") or []
+                )
+            else:
+                kategori = await categorize_expense(item.get("deskripsi", ""))
         result.append({**item, "kategori": kategori})
     return result
 
@@ -1406,7 +1413,7 @@ async def _persist_expense_items(chat_id: int, detection: dict) -> dict:
             catatan=item.get("catatan") or "",
         )
         if isinstance(res, dict) and res.get("status") == "success":
-            saved.append({**item, "page_id": res.get("page_id", "")})
+            saved.append({**item, "page_id": res.get("page_id", ""), "sumber": sumber})
             await mark_duplicate(chat_id, deskripsi, nominal, tanggal)
             await add_daily_total(chat_id, nominal, tanggal)
             await log_expense_action(chat_id, "simpan", {
@@ -1430,7 +1437,12 @@ async def _persist_expense_items(chat_id: int, detection: dict) -> dict:
 
 async def _save_expense_items(destination, chat_id: int, detection: dict) -> dict:
     """Simpan + kirim balasan hasil (dipakai jalur tanpa konfirmasi)."""
-    from src.expenses import build_saved_text, get_daily_total
+    from src.expenses import (
+        build_saved_text,
+        compute_total_for_date,
+        today_iso,
+        total_label_for_date,
+    )
 
     result = await _persist_expense_items(chat_id, detection)
     if not result["saved"]:
@@ -1440,9 +1452,13 @@ async def _save_expense_items(destination, chat_id: int, detection: dict) -> dic
         )
         return result
 
-    total = await get_daily_total(chat_id)
+    tanggal = result["saved"][0].get("tanggal") or today_iso()
+    total = await compute_total_for_date(chat_id, tanggal)
     await destination.send_message(
-        build_saved_text(result["saved"], total, result["skipped"], len(result["failed"]))
+        build_saved_text(
+            result["saved"], total, result["skipped"], len(result["failed"]),
+            total_label=total_label_for_date(tanggal),
+        )
     )
     return result
 
@@ -1517,11 +1533,13 @@ async def _handle_expense_correction(
     from src.expenses import (
         CATEGORIES,
         clear_draft,
+        format_receipt_catatan,
         get_draft,
         parse_amount,
         save_draft,
         set_edit_state,
         today_iso,
+        validate_receipt_draft,
     )
 
     low = (text or "").lower().strip()
@@ -1541,6 +1559,7 @@ async def _handle_expense_correction(
         return False
 
     item = draft["items"][0]
+    stop_words = r"(?:total|nominal|toko|kategori|tanggal|deskripsi|items?|item)"
 
     amount_match = re.search(
         r"(?:total|nominal)\s*:?\s*([\d.,]+\s*(?:rb|ribu|k|jt|juta)?)", low
@@ -1551,18 +1570,48 @@ async def _handle_expense_correction(
             item["nominal"] = value
 
     desc_match = re.search(
-        r"deskripsi\s*:?\s*(.+?)(?:\s+(?:total|nominal|toko|kategori|tanggal)\b|$)",
+        rf"deskripsi\s*:?\s*(.+?)(?:\s+{stop_words}\b|$)",
         text, flags=re.IGNORECASE,
     )
     if desc_match:
         item["deskripsi"] = desc_match.group(1).strip()[:80]
 
     toko_match = re.search(
-        r"toko\s*:?\s*(.+?)(?:\s+(?:total|nominal|kategori|tanggal|deskripsi)\b|$)",
+        rf"toko\s*:?\s*(.+?)(?:\s+{stop_words}\b|$)",
         text, flags=re.IGNORECASE,
     )
     if toko_match:
         item["toko"] = toko_match.group(1).strip()[:80]
+
+    items_match = re.search(
+        r"\bitems?\s*:?\s*(.+)$", text, flags=re.IGNORECASE | re.DOTALL
+    )
+    if items_match:
+        detail_items = []
+        for chunk in re.split(r"[,;\n]\s*", items_match.group(1).strip()):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            price_match = re.search(
+                r"([\d][\d.,]*(?:\s*(?:rb|ribu|k|jt|juta))?)\s*$", chunk, re.IGNORECASE
+            )
+            harga = parse_amount(price_match.group(1)) if price_match else None
+            nama = chunk[:price_match.start()] if price_match else chunk
+            nama = re.sub(r"[\s\-–—x*:]+$", "", nama).strip()
+            if not nama and not harga:
+                continue
+            detail_items.append({
+                "nama": (nama or "Item")[:60],
+                "qty": 1.0,
+                "harga": harga,
+                "subtotal": harga,
+            })
+        if detail_items:
+            item["detail_items"] = detail_items
+            item["catatan"] = format_receipt_catatan(
+                detail_items, item.get("diskon"), item.get("subtotal"),
+                item.get("metode_bayar") or "",
+            )
 
     for cat in CATEGORIES:
         if cat.lower() in low:
@@ -1578,6 +1627,13 @@ async def _handle_expense_correction(
     if date_match:
         item["tanggal"] = date_match.group(1)
 
+    if not item.get("deskripsi"):
+        detail = item.get("detail_items") or []
+        item["deskripsi"] = (item.get("toko") or (detail[0]["nama"] if detail else "Belanja struk"))[:80]
+
+    if draft.get("sumber") == "struk":
+        item["peringatan"] = validate_receipt_draft(item)
+
     await save_draft(chat_id, draft)
     await set_edit_state(chat_id, False)
     await _show_expense_confirmation(destination, chat_id, draft)
@@ -1587,15 +1643,19 @@ async def _handle_expense_correction(
 async def _handle_receipt_photo(
     update: Update, chat_id: int, file_bytes: bytes
 ) -> None:
-    """Baca struk dari foto via Moondream, lalu kirim bubble konfirmasi."""
+    """Baca struk via Moondream (JSON terstruktur), retry item, lalu konfirmasi."""
     from src.expenses import (
+        RECEIPT_ITEMS_PROMPT,
         RECEIPT_VISION_PROMPT,
         build_confirm_text,
-        categorize_expense,
+        categorize_receipt_async,
+        log_expense_action,
         parse_receipt_result,
         save_draft,
+        set_edit_state,
         set_scan_pending,
         today_iso,
+        validate_receipt_draft,
     )
     from src.tools import analyze_image
 
@@ -1611,32 +1671,127 @@ async def _handle_receipt_photo(
         except Exception:
             await update.effective_chat.send_message(text, reply_markup=reply_markup)
 
+    def _file_id() -> str:
+        try:
+            if update.message and update.message.photo:
+                return update.message.photo[-1].file_id
+            if update.message and update.message.document:
+                return update.message.document.file_id
+        except Exception:
+            pass
+        return ""
+
+    audit_raw = raw or ""
+
     if "Gagal menganalisis" in (raw or ""):
+        await log_expense_action(chat_id, "scan_struk", {
+            "sumber": "struk",
+            "file_id": _file_id(),
+            "vision_raw": audit_raw,
+            "peringatan": ["vision gagal"],
+        })
         await _finish(
-            "❌ Gagal membaca struk. Coba kirim foto yang lebih terang dan jelas ya."
+            "❌ Gagal membaca struk. Coba kirim foto yang lebih terang dan jelas ya.\n\n"
+            "Atau isi manual, contoh: /pengeluaran 13100 belanja alfamidi"
         )
         return
 
     parsed = parse_receipt_result(raw)
-    if not parsed:
+
+    # Retry sekali dengan prompt khusus item bila rincian item belum terbaca.
+    if not parsed or not parsed.get("detail_items"):
+        try:
+            await status_msg.edit_text("Item belum terbaca, mencoba sekali lagi... 🔍")
+        except Exception:
+            pass
+        raw2 = await analyze_image(
+            file_bytes, question=RECEIPT_ITEMS_PROMPT, task="Visual Question Answering"
+        )
+        audit_raw = f"{audit_raw}\n---\n{raw2 or ''}"
+        parsed2 = None
+        if raw2 and "Gagal menganalisis" not in raw2:
+            parsed2 = parse_receipt_result(raw2)
+        if parsed2:
+            if not parsed:
+                parsed = parsed2
+            else:
+                if not parsed.get("detail_items") and parsed2.get("detail_items"):
+                    parsed["detail_items"] = parsed2["detail_items"]
+                    parsed["catatan"] = parsed2.get("catatan") or parsed.get("catatan")
+                    parsed["peringatan"] = [
+                        warning for warning in (parsed.get("peringatan") or [])
+                        if "item" not in warning.lower()
+                    ]
+                if not parsed.get("toko") and parsed2.get("toko"):
+                    parsed["toko"] = parsed2["toko"]
+                    parsed["deskripsi"] = parsed2["toko"][:80]
+                parsed["confidence"] = min(
+                    float(parsed.get("confidence") or 0.5),
+                    float(parsed2.get("confidence") or 0.5),
+                )
+
+    if not parsed or int(parsed.get("nominal") or 0) <= 0:
+        await log_expense_action(chat_id, "scan_struk", {
+            "sumber": "struk",
+            "file_id": _file_id(),
+            "vision_raw": audit_raw,
+            "peringatan": ["total tidak terbaca"],
+        })
+        draft = {
+            "items": [{
+                "nominal": 0,
+                "deskripsi": "",
+                "kategori": None,
+                "tanggal": today_iso(),
+                "waktu": "",
+                "toko": (parsed or {}).get("toko", ""),
+                "catatan": "",
+                "detail_items": (parsed or {}).get("detail_items") or [],
+            }],
+            "sumber": "struk",
+            "manual": True,
+        }
+        await save_draft(chat_id, draft)
+        await set_edit_state(chat_id, True)
         await _finish(
-            "❌ Aku belum bisa menemukan total di struk itu.\n"
-            "Coba kirim foto yang lebih jelas, atau catat manual: belanja indomaret 87500"
+            "❌ Aku belum bisa menemukan total di struk itu.\n\n"
+            "Balas pesan ini untuk isi manual, contoh:\n"
+            "total 13100 toko Alfamidi\n"
+            "atau: total 13100 toko Alfamidi item aqua 6600, susu 7000"
         )
         return
 
-    kategori = parsed.get("kategori") or await categorize_expense(
-        parsed.get("deskripsi", "")
+    kategori = parsed.get("kategori") or await categorize_receipt_async(
+        parsed.get("toko", ""), parsed.get("detail_items") or []
     )
     item = {
         "nominal": parsed["nominal"],
         "deskripsi": parsed["deskripsi"],
         "kategori": kategori,
         "tanggal": parsed.get("tanggal") or today_iso(),
+        "waktu": parsed.get("jam") or "",
         "toko": parsed.get("toko", ""),
         "catatan": parsed.get("catatan", ""),
+        "detail_items": parsed.get("detail_items") or [],
+        "diskon": parsed.get("diskon"),
+        "subtotal": parsed.get("subtotal"),
+        "metode_bayar": parsed.get("metode_bayar") or "",
+        "peringatan": parsed.get("peringatan") or [],
     }
-    draft = {"items": [item], "sumber": "struk"}
+    item["peringatan"] = validate_receipt_draft(item)
+
+    await log_expense_action(chat_id, "scan_struk", {
+        "sumber": "struk",
+        "nominal": item["nominal"],
+        "deskripsi": item["deskripsi"],
+        "kategori": kategori,
+        "file_id": _file_id(),
+        "vision_raw": audit_raw,
+        "items_count": len(item["detail_items"]),
+        "peringatan": item["peringatan"],
+    })
+
+    draft = {"items": [item], "sumber": "struk", "manual": False}
     await save_draft(chat_id, draft)
     await _finish(build_confirm_text(draft), reply_markup=_expense_confirm_keyboard())
 
@@ -1647,7 +1802,6 @@ async def _handle_expense_callback(query, chat_id: int, action: str) -> None:
         clear_draft,
         format_rupiah,
         get_draft,
-        get_daily_total,
         get_expense_settings,
         log_expense_action,
         resolve_expense_index,
@@ -1673,14 +1827,21 @@ async def _handle_expense_callback(query, chat_id: int, action: str) -> None:
         if not draft:
             await _edit_or_reply("Draft sudah kedaluwarsa. Kirim ulang pengeluarannya ya.")
             return
-        from src.expenses import build_saved_text
+        from src.expenses import (
+            build_saved_text,
+            compute_total_for_date,
+            today_iso,
+            total_label_for_date,
+        )
         result = await _persist_expense_items(chat_id, draft)
         await clear_draft(chat_id)
         if result["saved"]:
-            total = await get_daily_total(chat_id)
+            tanggal = result["saved"][0].get("tanggal") or today_iso()
+            total = await compute_total_for_date(chat_id, tanggal)
             await _edit_or_reply(
                 build_saved_text(
-                    result["saved"], total, result["skipped"], len(result["failed"])
+                    result["saved"], total, result["skipped"], len(result["failed"]),
+                    total_label=total_label_for_date(tanggal),
                 )
             )
         else:
@@ -1702,6 +1863,7 @@ async def _handle_expense_callback(query, chat_id: int, action: str) -> None:
         await _edit_or_reply(
             "✏️ Ketik koreksinya dalam satu pesan. Contoh:\n"
             "total 90000 toko Alfamart kategori Belanja\n"
+            "atau: total 13100 toko Alfamidi item aqua 6600, susu 7000\n"
             "atau: deskripsi kopi susu total 27rb kategori Makan & Minum"
         )
         return
