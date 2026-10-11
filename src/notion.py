@@ -854,6 +854,8 @@ async def _inspect_expense_schema(
         "kategori_type": None,
         "sumber": None,
         "sumber_type": None,
+        "sumber_dana": None,
+        "sumber_dana_type": None,
         "tanggal": None,
         "toko": None,
         "catatan": None,
@@ -909,9 +911,20 @@ async def _inspect_expense_schema(
             schema["kategori"], schema["kategori_type"] = _pick_select(kategori_cands)
             selected_names.add(schema["kategori"] or "")
 
+        # Properti "sumber dana" (dana/dompet) dibedakan dari "Sumber"
+        # (asal entri: chat/struk/manual) lewat kata kunci "dana".
+        dana_cands = [
+            c for c in selects
+            if "dana" in c[0].lower() or "source of funds" in c[0].lower()
+        ]
+        if dana_cands:
+            schema["sumber_dana"], schema["sumber_dana_type"] = _pick_select(dana_cands)
+            selected_names.add(schema["sumber_dana"] or "")
+
         sumber_cands = [
             c for c in selects
-            if "sumber" in c[0].lower() or "source" in c[0].lower()
+            if ("sumber" in c[0].lower() or "source" in c[0].lower())
+            and "dana" not in c[0].lower()
         ]
         if sumber_cands:
             schema["sumber"], schema["sumber_type"] = _pick_select(sumber_cands)
@@ -922,6 +935,9 @@ async def _inspect_expense_schema(
         if not schema["kategori"] and remaining_selects:
             schema["kategori"], schema["kategori_type"] = _pick_select(remaining_selects)
             remaining_selects = [c for c in remaining_selects if c[0] != schema["kategori"]]
+        if not schema["sumber_dana"] and remaining_selects:
+            schema["sumber_dana"], schema["sumber_dana_type"] = _pick_select(remaining_selects)
+            remaining_selects = [c for c in remaining_selects if c[0] != schema["sumber_dana"]]
         if not schema["sumber"] and remaining_selects:
             schema["sumber"], schema["sumber_type"] = _pick_select(remaining_selects)
 
@@ -947,12 +963,15 @@ async def save_expense(
     kategori: str = "Lain-lain",
     tanggal: Optional[str] = None,
     sumber: str = "manual",
+    sumber_dana: str = "",
     toko: str = "",
     catatan: str = "",
 ) -> dict[str, Any]:
     """
     Menyimpan satu pengeluaran ke database Notion "Keuangan Oline".
-    Returns {"status": "success", "page_id", "url", ...} atau {"error": ...}.
+    `sumber` = asal entri (chat/struk/manual); `sumber_dana` = dompet/rekening
+    (Cash/BNI/Bank Jago/...). Returns {"status": "success", "page_id", ...}
+    atau {"error": ...}.
     """
     api_key = os.environ.get("NOTION_API_KEY", "").strip()
     if not api_key:
@@ -992,6 +1011,10 @@ async def save_expense(
                 )
             if schema.get("sumber"):
                 properties[schema["sumber"]] = _select_payload(schema.get("sumber_type"), sumber)
+            if schema.get("sumber_dana") and sumber_dana:
+                properties[schema["sumber_dana"]] = _select_payload(
+                    schema.get("sumber_dana_type"), sumber_dana.strip()
+                )
             if schema.get("tanggal"):
                 properties[schema["tanggal"]] = {"date": {"start": tanggal_iso}}
             if schema.get("toko") and toko:
@@ -1016,6 +1039,7 @@ async def save_expense(
                     "kategori": (kategori or "Lain-lain").strip(),
                     "tanggal": tanggal_iso,
                     "sumber": sumber,
+                    "sumber_dana": sumber_dana,
                 }
             if resp.status_code == 404:
                 return {
@@ -1064,6 +1088,7 @@ def _map_expense_page(page: dict, schema: dict) -> dict[str, Any]:
         "nominal": nominal,
         "kategori": _extract_select_any(props, schema.get("kategori")),
         "sumber": _extract_select_any(props, schema.get("sumber")),
+        "sumber_dana": _extract_select_any(props, schema.get("sumber_dana")),
         "tanggal": tanggal,
         "toko": _extract_rich_text(props, schema.get("toko")),
         "catatan": _extract_rich_text(props, schema.get("catatan")),
@@ -1075,12 +1100,14 @@ async def query_expenses(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     keyword: Optional[str] = None,
+    sumber_dana: Optional[str] = None,
     max_pages: int = 5,
 ) -> list[dict[str, Any]]:
     """
     Query database pengeluaran Notion.
     - start_date/end_date format YYYY-MM-DD (filter properti Tanggal).
     - keyword difilter di sisi Python (deskripsi/kategori/toko/catatan).
+    - sumber_dana difilter di Notion (properti Sumber Dana) + fallback Python.
     Returns list dict terurut tanggal terbaru lebih dulu.
     """
     api_key = os.environ.get("NOTION_API_KEY", "").strip()
@@ -1105,6 +1132,17 @@ async def query_expenses(
                     filters.append({
                         "property": schema["tanggal"],
                         "date": {"on_or_before": end_date[:10]},
+                    })
+            if sumber_dana and schema.get("sumber_dana"):
+                if schema.get("sumber_dana_type") == "status":
+                    filters.append({
+                        "property": schema["sumber_dana"],
+                        "status": {"equals": sumber_dana},
+                    })
+                else:
+                    filters.append({
+                        "property": schema["sumber_dana"],
+                        "select": {"equals": sumber_dana},
                     })
 
             payload: dict[str, Any] = {"page_size": 100}
@@ -1148,6 +1186,12 @@ async def query_expenses(
             or kw in (r.get("toko") or "").lower()
             or kw in (r.get("catatan") or "").lower()
         ]
+    if sumber_dana:
+        target = sumber_dana.strip().lower()
+        results = [
+            r for r in results
+            if (r.get("sumber_dana") or "").strip().lower() == target
+        ]
     return results
 
 
@@ -1185,6 +1229,7 @@ async def update_expense(
     tanggal: Optional[str] = None,
     toko: Optional[str] = None,
     catatan: Optional[str] = None,
+    sumber_dana: Optional[str] = None,
 ) -> dict[str, Any]:
     """Memperbarui properti halaman pengeluaran yang sudah ada (tanpa duplikat)."""
     api_key = os.environ.get("NOTION_API_KEY", "").strip()
@@ -1208,6 +1253,10 @@ async def update_expense(
                     pass
             if kategori and schema.get("kategori"):
                 properties[schema["kategori"]] = _select_payload(schema.get("kategori_type"), kategori.strip())
+            if sumber_dana and schema.get("sumber_dana"):
+                properties[schema["sumber_dana"]] = _select_payload(
+                    schema.get("sumber_dana_type"), sumber_dana.strip()
+                )
             if tanggal and schema.get("tanggal"):
                 properties[schema["tanggal"]] = {"date": {"start": tanggal[:10]}}
             if toko is not None and schema.get("toko"):
@@ -1257,12 +1306,28 @@ async def check_expense_database() -> dict[str, Any]:
                 raw_title = data.get("title") or []
                 if raw_title and isinstance(raw_title[0], dict):
                     title = raw_title[0].get("plain_text", "")
+                sumber_dana_info = None
+                for p_name, p_info in (data.get("properties") or {}).items():
+                    p_type = p_info.get("type")
+                    if p_type not in ("select", "status"):
+                        continue
+                    if "dana" not in p_name.lower() and "source of funds" not in p_name.lower():
+                        continue
+                    opts = (
+                        (p_info.get("select") or p_info.get("status") or {}).get("options") or []
+                    )
+                    sumber_dana_info = {
+                        "name": p_name,
+                        "options": [o.get("name", "") for o in opts if o.get("name")],
+                    }
+                    break
                 return {
                     "configured": True,
                     "status": "ok",
                     "database_id": database_id,
                     "title": title or "Keuangan Oline",
                     "properties": list((data.get("properties") or {}).keys()),
+                    "sumber_dana": sumber_dana_info,
                 }
             if resp.status_code == 404:
                 return {

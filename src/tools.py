@@ -245,6 +245,14 @@ TOOL_DECLARATIONS = [
                         "Belanja, Rumah, Kesehatan, Hiburan, Pendidikan, Lain-lain."
                     ),
                 },
+                "sumber_dana": {
+                    "type": "string",
+                    "description": (
+                        "Sumber dana pengeluaran (opsional). Pilih salah satu: Cash, BNI, "
+                        "Bank Jago, Shopee Pay, Ovo, Gopay, Dana. Isi hanya jika pengguna "
+                        "menyebutkan sumbernya (mis. 'kopi 25rb cash' -> Cash)."
+                    ),
+                },
                 "tanggal": {
                     "type": "string",
                     "description": "Tanggal pengeluaran (YYYY-MM-DD). Default hari ini.",
@@ -264,8 +272,9 @@ TOOL_DECLARATIONS = [
     {
         "name": "get_expense_recap",
         "description": (
-            "Mengambil rekap pengeluaran pengguna (total + breakdown kategori) dari Notion. "
-            "Gunakan saat pengguna bertanya rekap pengeluaran hari ini, minggu ini, atau bulan ini."
+            "Mengambil rekap pengeluaran pengguna (total + breakdown sumber dana & kategori) "
+            "dari Notion. Gunakan saat pengguna bertanya rekap pengeluaran hari ini, minggu "
+            "ini, atau bulan ini, termasuk rekap per sumber dana (mis. 'pengeluaran BNI bulan ini')."
         ),
         "parameters": {
             "type": "object",
@@ -273,6 +282,13 @@ TOOL_DECLARATIONS = [
                 "periode": {
                     "type": "string",
                     "description": "Periode rekap: 'hari', 'minggu', atau 'bulan'. Default 'bulan'.",
+                },
+                "sumber_dana": {
+                    "type": "string",
+                    "description": (
+                        "Filter sumber dana (opsional). Pilih salah satu: Cash, BNI, Bank Jago, "
+                        "Shopee Pay, Ovo, Gopay, Dana."
+                    ),
                 },
             },
             "required": [],
@@ -1221,23 +1237,39 @@ async def execute_save_expense(
     nominal: float,
     kategori: Optional[str] = None,
     tanggal: Optional[str] = None,
+    sumber_dana: str = "",
     toko: str = "",
     catatan: str = "",
 ) -> dict[str, Any]:
     """Menyimpan pengeluaran ke Notion (executor tool fallback function calling)."""
-    from src.expenses import categorize_expense
+    from src.expenses import categorize_expense, parse_sumber
     from src.notion import save_expense
 
     if not deskripsi or not str(deskripsi).strip():
         return {"error": "Deskripsi pengeluaran kosong."}
 
     kategori_final = kategori or await categorize_expense(str(deskripsi))
+
+    # Normalisasi sumber dana; fallback default user lalu "Tidak diketahui"
+    # (jalur tool tidak bisa bertanya interaktif seperti jalur imperatif).
+    sumber_final = parse_sumber(sumber_dana) if sumber_dana else None
+    if not sumber_final:
+        try:
+            from src.expenses import get_expense_settings
+
+            sumber_final = (await get_expense_settings(chat_id)).get("default_source")
+        except Exception:
+            sumber_final = None
+    if not sumber_final:
+        sumber_final = "Cash"
+
     res = await save_expense(
         deskripsi=str(deskripsi).strip(),
         nominal=nominal,
         kategori=kategori_final,
         tanggal=tanggal,
         sumber="chat",
+        sumber_dana=sumber_final,
         toko=toko or "",
         catatan=catatan or "",
     )
@@ -1248,6 +1280,7 @@ async def execute_save_expense(
             "nominal": res.get("nominal"),
             "kategori": res.get("kategori"),
             "tanggal": res.get("tanggal"),
+            "sumber_dana": sumber_final,
             "message": "Pengeluaran berhasil disimpan.",
         }
     return res if isinstance(res, dict) else {"error": str(res)}
@@ -1256,22 +1289,31 @@ async def execute_save_expense(
 async def execute_get_expense_recap(
     chat_id: int,
     periode: Optional[str] = None,
+    sumber_dana: Optional[str] = None,
 ) -> dict[str, Any]:
     """Mengambil rekap pengeluaran dari Notion (executor tool fallback)."""
-    from src.expenses import build_recap_text, parse_periode
+    from src.expenses import build_recap_text, parse_periode, parse_sumber
     from src.notion import query_expenses
 
+    sumber_filter = parse_sumber(sumber_dana) if sumber_dana else None
     start, end, label = parse_periode(periode or "bulan")
-    entries = await query_expenses(start_date=start, end_date=end)
+    entries = await query_expenses(
+        start_date=start, end_date=end, sumber_dana=sumber_filter
+    )
     if not entries:
-        return {"periode": label, "message": f"Belum ada pengeluaran {label.lower()}."}
+        return {
+            "periode": label,
+            "sumber_dana": sumber_filter,
+            "message": f"Belum ada pengeluaran {label.lower()}.",
+        }
 
     total = sum(int(e.get("nominal") or 0) for e in entries)
     return {
         "periode": label,
+        "sumber_dana": sumber_filter,
         "total": total,
         "jumlah_transaksi": len(entries),
-        "ringkasan": build_recap_text(entries, label),
+        "ringkasan": build_recap_text(entries, label, sumber_dana=sumber_filter),
     }
 
 
@@ -3585,12 +3627,14 @@ async def execute_tool(
                 nominal=args.get("nominal", 0),
                 kategori=args.get("kategori"),
                 tanggal=args.get("tanggal"),
+                sumber_dana=args.get("sumber_dana", ""),
                 toko=args.get("toko", ""),
                 catatan=args.get("catatan", ""),
             )
         return await executor(
             chat_id=chat_id,
             periode=args.get("periode"),
+            sumber_dana=args.get("sumber_dana"),
         )
     elif func_name in ("check_quota", "check_ai_quota"):
         return await check_ai_quota(chat_id=chat_id)

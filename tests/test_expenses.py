@@ -18,9 +18,12 @@ os.environ["TELEGRAM_BOT_TOKEN"] = "test:token"
 
 from src.expenses import (  # noqa: E402
     RECEIPT_VISION_PROMPT,
+    SUMBER_OPTIONS,
+    apply_source_to_draft,
     build_confirm_text,
     build_recap_text,
     build_saved_text,
+    build_source_prompt_text,
     categorize_local,
     categorize_receipt,
     compute_total_for_date,
@@ -32,6 +35,7 @@ from src.expenses import (  # noqa: E402
     parse_amount,
     parse_periode,
     parse_receipt_result,
+    parse_sumber,
     short_page_id,
     today_iso,
     total_label_for_date,
@@ -498,6 +502,246 @@ class TestIntentDanRegistry(unittest.TestCase):
 
         self.assertIn("pengeluaran", COMMAND_HELP_DETAIL)
         self.assertNotIn("jurnal", COMMAND_HELP_DETAIL)
+
+
+class TestParseSumber(unittest.TestCase):
+
+    def test_keyword_umum(self):
+        cases = {
+            "kopi 25rb cash": "Cash",
+            "bayar tunai 10rb": "Cash",
+            "uang fisik 50rb": "Cash",
+            "makan 30rb bni": "BNI",
+            "bank bni": "BNI",
+            "grab 15k bank jago": "Bank Jago",
+            "grab 15k jago": "Bank Jago",
+            "jago": "Bank Jago",
+            "dana": "Dana",
+            "beli pulsa 10rb gopay": "Gopay",
+            "go pay": "Gopay",
+            "kopi 25rb ovo": "Ovo",
+            "kopi 25rb shopee pay": "Shopee Pay",
+            "kopi 25rb shopeepay": "Shopee Pay",
+            "kopi 25rb dana": "Dana",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(parse_sumber(text), expected)
+
+    def test_guard_false_positive(self):
+        for text in (
+            "dana darurat 500rb",
+            "dana pensiun",
+            "dia jago masak",
+            "belanja di shopee",
+            "makasih jago",
+            "tolong dana",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(parse_sumber(text))
+
+    def test_semua_opsi_kanonik(self):
+        self.assertEqual(
+            SUMBER_OPTIONS,
+            ["Cash", "BNI", "Bank Jago", "Shopee Pay", "Ovo", "Gopay", "Dana"],
+        )
+
+
+class TestDeteksiSumberDana(unittest.TestCase):
+
+    def test_chat_dengan_sumber(self):
+        detection = detect_expense_entry("kopi 25rb cash")
+        self.assertIsNotNone(detection)
+        item = detection["items"][0]
+        self.assertEqual(item["nominal"], 25000)
+        self.assertEqual(item["deskripsi"], "kopi")
+        self.assertEqual(item["sumber_dana"], "Cash")
+
+    def test_bank_jago_strip_dari_deskripsi(self):
+        item = detect_expense_entry("grab 15k bank jago")["items"][0]
+        self.assertEqual(item["deskripsi"], "grab")
+        self.assertEqual(item["sumber_dana"], "Bank Jago")
+
+    def test_gopay_pulsa(self):
+        item = detect_expense_entry("beli pulsa 10rb gopay")["items"][0]
+        self.assertEqual(item["deskripsi"], "pulsa")
+        self.assertEqual(item["sumber_dana"], "Gopay")
+
+    def test_multi_item_beda_sumber(self):
+        detection = detect_expense_entry("kopi 25rb cash, makan 30rb bni")
+        items = detection["items"]
+        self.assertEqual([i["deskripsi"] for i in items], ["kopi", "makan"])
+        self.assertEqual([i["sumber_dana"] for i in items], ["Cash", "BNI"])
+
+    def test_tanpa_sumber_none(self):
+        item = detect_expense_entry("kopi 25rb")["items"][0]
+        self.assertIsNone(item["sumber_dana"])
+
+    def test_dana_akhir_bagian(self):
+        item = detect_expense_entry("kopi 25rb dana")["items"][0]
+        self.assertEqual(item["deskripsi"], "kopi")
+        self.assertEqual(item["sumber_dana"], "Dana")
+
+
+class TestFormatSumberDana(unittest.TestCase):
+
+    def test_saved_text_tampilkan_sumber(self):
+        saved = [{
+            "nominal": 25000,
+            "deskripsi": "kopi",
+            "kategori": "Makan & Minum",
+            "sumber_dana": "Cash",
+        }]
+        text = build_saved_text(saved, 25000)
+        self.assertIn("Tercatat", text)
+        self.assertIn("Cash", text)
+
+    def test_saved_struk_tampilkan_sumber(self):
+        saved = [{
+            "sumber": "struk",
+            "nominal": 13100,
+            "kategori": "Belanja",
+            "toko": "Alfamidi",
+            "tanggal": today_iso(),
+            "sumber_dana": "BNI",
+        }]
+        text = build_saved_text(saved, 13100)
+        self.assertIn("🏦 BNI", text)
+
+    def test_confirm_text_tampilkan_sumber(self):
+        draft = {"sumber": "chat", "items": [{
+            "nominal": 25000,
+            "deskripsi": "kopi",
+            "kategori": "Makan & Minum",
+            "sumber_dana": "BNI",
+        }]}
+        self.assertIn("BNI", build_confirm_text(draft))
+
+    def test_confirm_struk_belum_dipilih(self):
+        draft = {"sumber": "struk", "items": [{
+            "nominal": 13100,
+            "deskripsi": "Alfamidi",
+            "toko": "Alfamidi",
+            "tanggal": today_iso(),
+            "kategori": "Belanja",
+        }]}
+        self.assertIn("belum dipilih", build_confirm_text(draft))
+
+    def test_source_prompt(self):
+        draft = {"sumber": "chat", "items": [{"nominal": 25000, "deskripsi": "kopi"}]}
+        text = build_source_prompt_text(draft)
+        self.assertIn("Sumber pengeluaran", text)
+        self.assertIn("cash", text)
+
+    def test_apply_source_to_draft(self):
+        draft = {"items": [{"sumber_dana": None}, {"sumber_dana": "BNI"}]}
+        filled = apply_source_to_draft(draft, "Cash")
+        self.assertEqual(filled, 1)
+        self.assertEqual(draft["items"][0]["sumber_dana"], "Cash")
+        self.assertEqual(draft["items"][1]["sumber_dana"], "BNI")
+        filled_all = apply_source_to_draft(draft, "Gopay", force=True)
+        self.assertEqual(filled_all, 2)
+        self.assertEqual(draft["items"][1]["sumber_dana"], "Gopay")
+
+
+class TestRekapPerSumber(unittest.TestCase):
+
+    def test_breakdown_dan_bucket_unknown(self):
+        entries = [
+            {"nominal": 25000, "kategori": "Makan & Minum", "sumber_dana": "Cash"},
+            {"nominal": 30000, "kategori": "Makan & Minum", "sumber_dana": "BNI"},
+            {"nominal": 5000, "kategori": "Transport", "sumber_dana": ""},
+        ]
+        text = build_recap_text(entries, "Bulan Ini")
+        self.assertIn("Per sumber", text)
+        self.assertIn("Cash", text)
+        self.assertIn("BNI", text)
+        self.assertIn("Tidak diketahui", text)
+
+    def test_filter_sumber(self):
+        entries = [
+            {"nominal": 25000, "kategori": "Makan & Minum", "sumber_dana": "Cash"},
+            {"nominal": 30000, "kategori": "Makan & Minum", "sumber_dana": "BNI"},
+        ]
+        text = build_recap_text(entries, "Bulan Ini", sumber_dana="BNI")
+        self.assertIn("Rp30.000", text)
+        self.assertNotIn("Rp25.000", text)
+
+    def test_breakdown_only(self):
+        entries = [{"nominal": 10000, "kategori": "Transport", "sumber_dana": "Gopay"}]
+        text = build_recap_text(entries, "Hari Ini", breakdown_only=True)
+        self.assertIn("Per sumber", text)
+        self.assertNotIn("Kategori terbesar", text)
+
+    def test_tanpa_sumber_tetap_format_lama(self):
+        entries = [
+            {"nominal": 75000, "kategori": "Makan & Minum"},
+            {"nominal": 25000, "kategori": "Transport"},
+        ]
+        text = build_recap_text(entries, "Bulan Ini")
+        self.assertNotIn("Per sumber", text)
+        self.assertIn("Kategori terbesar", text)
+
+
+class TestSettingsSumber(unittest.IsolatedAsyncioTestCase):
+
+    @patch("src.kv.set_cache", new_callable=AsyncMock, return_value=True)
+    @patch("src.kv.get_cache", new_callable=AsyncMock, return_value=None)
+    async def test_set_default_source(self, mock_get, mock_set):
+        from src.expenses import set_expense_settings
+
+        self.assertTrue(await set_expense_settings(123, default_source="BNI"))
+        payload = json.loads(mock_set.call_args[0][1])
+        self.assertEqual(payload["default_source"], "BNI")
+
+    @patch("src.kv.set_cache", new_callable=AsyncMock, return_value=True)
+    @patch("src.kv.get_cache", new_callable=AsyncMock, return_value=None)
+    async def test_reset_default_source(self, mock_get, mock_set):
+        from src.expenses import set_expense_settings
+
+        await set_expense_settings(123, default_source=None)
+        payload = json.loads(mock_set.call_args[0][1])
+        self.assertIsNone(payload["default_source"])
+
+    @patch(
+        "src.kv.get_cache",
+        new_callable=AsyncMock,
+        return_value=json.dumps({"default_source": "Gopay"}),
+    )
+    async def test_get_default_source(self, mock_get):
+        from src.expenses import get_expense_settings
+
+        settings = await get_expense_settings(123)
+        self.assertEqual(settings["default_source"], "Gopay")
+
+
+class TestKoreksiSumber(unittest.IsolatedAsyncioTestCase):
+
+    @patch("src.bot._show_expense_confirmation", new_callable=AsyncMock)
+    @patch("src.kv.del_cache", new_callable=AsyncMock, return_value=True)
+    @patch("src.kv.set_cache", new_callable=AsyncMock, return_value=True)
+    @patch("src.kv.get_cache", new_callable=AsyncMock)
+    async def test_koreksi_sumber_bni(self, mock_get, mock_set, mock_del, mock_show):
+        from src.bot import _handle_expense_correction
+
+        draft = {
+            "items": [{
+                "nominal": 13100,
+                "deskripsi": "Alfamidi",
+                "kategori": "Belanja",
+                "tanggal": "2026-10-05",
+                "toko": "Alfamidi",
+            }],
+            "sumber": "struk",
+        }
+        mock_get.return_value = json.dumps(draft)
+        destination = AsyncMock()
+
+        handled = await _handle_expense_correction(destination, 123, "sumber bni")
+
+        self.assertTrue(handled)
+        saved = json.loads(mock_set.call_args[0][1])
+        self.assertEqual(saved["items"][0]["sumber_dana"], "BNI")
 
 
 if __name__ == "__main__":

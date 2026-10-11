@@ -144,7 +144,7 @@ COMMAND_HELP_DETAIL = {
     "persona": "Atur gaya komunikasi. Format: /persona <gaya>",
     "models": "Pilih model AI manual. Format: /models [info|status|reset|preset]",
     "memory": "Atur memori otomatis ke Notion. Format: /memory [on|off|list|delete|clear]",
-    "pengeluaran": "Catat & rekap pengeluaran. Format: /pengeluaran [rekap|cari|hapus|config]",
+    "pengeluaran": "Catat & rekap pengeluaran + sumber dana. Format: /pengeluaran [rekap|cari|hapus|config]",
     "set_token": "Simpan token layanan. Format: /set_token <layanan> <token>",
 }
 
@@ -310,7 +310,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif cmd == "pengeluaran":
         await query.message.reply_text(
             "🧾 Fitur Pengeluaran\n\n"
-            "Catat langsung: ketik mis. `kopi 25rb` atau `beli bensin 50rb`.\n"
+            "Catat langsung: ketik mis. `kopi 25rb cash` atau `grab 15k gopay`.\n"
             "Perintah: /pengeluaran [rekap|cari|hapus|config]\n"
             "Scan struk: kirim foto dengan caption 'struk' atau lewat /pengeluaran config."
         )
@@ -1143,31 +1143,58 @@ async def handle_jurnal_command(
 EXPENSE_USAGE_TEXT = (
     "🧾 Fitur Pengeluaran\n\n"
     "Catat (langsung ketik):\n"
-    "• kopi 25rb\n"
-    "• grab 15k\n"
-    "• beli bensin 50rb\n"
-    "• tadi makan siang 30rb\n\n"
+    "• kopi 25rb cash\n"
+    "• grab 15k bank jago\n"
+    "• beli pulsa 10rb gopay\n"
+    "• tadi makan siang 30rb bni\n"
+    "(kalau sumber tidak disebut, Oline tanya dulu)\n\n"
     "Perintah:\n"
-    "• /pengeluaran 25rb kopi — catat manual\n"
-    "• /pengeluaran rekap [hari|minggu|bulan]\n"
-    "• /pengeluaran cari <kata>\n"
+    "• /pengeluaran 25rb kopi cash — catat manual\n"
+    "• /pengeluaran rekap [hari|minggu|bulan] [sumber]\n"
+    "• /pengeluaran rekap sumber — breakdown per sumber\n"
+    "• /pengeluaran cari <kata> [sumber]\n"
     "• /pengeluaran hapus <id>\n"
-    "• /pengeluaran config — pengaturan\n\n"
+    "• /pengeluaran config — pengaturan & default sumber\n\n"
+    "Sumber dana: cash, bni, bank jago, shopee pay, ovo, gopay, dana.\n"
     "Scan struk: kirim foto + caption \"struk\".\n"
     "Kalau struk gagal terbaca, balas manual:\n"
     "total 13100 toko Alfamidi item aqua 6600, susu 7000"
 )
 
 
-def _expense_confirm_keyboard() -> InlineKeyboardMarkup:
-    """Tombol konfirmasi draft pengeluaran (chat/struk)."""
-    return InlineKeyboardMarkup([
+def _expense_source_keyboard_rows() -> list[list[InlineKeyboardButton]]:
+    """Baris tombol pilih sumber dana (samakan dengan opsi Notion 'sumber dana')."""
+    return [
         [
-            InlineKeyboardButton("✅ Simpan", callback_data="exp:save"),
-            InlineKeyboardButton("✏️ Edit", callback_data="exp:edit"),
+            InlineKeyboardButton("💵 Cash", callback_data="exp:src:cash"),
+            InlineKeyboardButton("🏦 BNI", callback_data="exp:src:bni"),
+            InlineKeyboardButton("🏦 Bank Jago", callback_data="exp:src:jago"),
         ],
-        [InlineKeyboardButton("❌ Batal", callback_data="exp:cancel")],
+        [
+            InlineKeyboardButton("📱 Shopee Pay", callback_data="exp:src:shopeepay"),
+            InlineKeyboardButton("📱 Ovo", callback_data="exp:src:ovo"),
+            InlineKeyboardButton("📱 Gopay", callback_data="exp:src:gopay"),
+        ],
+        [InlineKeyboardButton("📱 Dana", callback_data="exp:src:dana")],
+    ]
+
+
+def _expense_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Tombol konfirmasi draft pengeluaran (chat/struk) + pilihan sumber dana."""
+    rows = _expense_source_keyboard_rows()
+    rows.append([
+        InlineKeyboardButton("✅ Simpan", callback_data="exp:save"),
+        InlineKeyboardButton("✏️ Edit", callback_data="exp:edit"),
     ])
+    rows.append([InlineKeyboardButton("❌ Batal", callback_data="exp:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _expense_source_keyboard() -> InlineKeyboardMarkup:
+    """Tombol pertanyaan sumber dana (tanpa Simpan)."""
+    rows = _expense_source_keyboard_rows()
+    rows.append([InlineKeyboardButton("❌ Batal", callback_data="exp:cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def _render_expense_config(
@@ -1180,8 +1207,14 @@ async def _render_expense_config(
     settings = await get_expense_settings(chat_id)
     db = await check_expense_database()
 
+    sd_line = ""
     if db.get("status") == "ok":
         db_line = f"✅ {db.get('title', 'Keuangan Oline')} ({len(db.get('properties') or [])} properti)"
+        sd = db.get("sumber_dana") or {}
+        if sd:
+            sd_line = f"✅ {sd.get('name')}: {', '.join(sd.get('options') or []) or '-'}"
+        else:
+            sd_line = "❌ properti 'sumber dana' tidak ditemukan di database"
     elif db.get("status") == "unconfigured":
         db_line = "❌ Belum dikonfigurasi (set NOTION_EXPENSE_DATABASE_ID)"
     elif db.get("status") == "not_shared":
@@ -1189,13 +1222,20 @@ async def _render_expense_config(
     else:
         db_line = f"❌ Error: {db.get('detail', 'tidak diketahui')}"
 
+    default_src = settings.get("default_source")
     text = (
         "⚙️ Pengaturan Pengeluaran\n\n"
         f"Auto-save dari chat: {'✅ ON' if settings.get('autosave') else '❌ OFF'}\n"
-        f"Konfirmasi sebelum simpan: {'✅ ON' if settings.get('confirm') else '❌ OFF'}\n\n"
-        f"Database: {db_line}\n\n"
+        f"Konfirmasi sebelum simpan: {'✅ ON' if settings.get('confirm') else '❌ OFF'}\n"
+        f"Default sumber dana: {default_src if default_src else '⏳ tanya tiap kali'}\n\n"
+        f"Database: {db_line}\n"
+        f"Sumber dana: {sd_line}\n\n"
         "Tekan tombol untuk mengubah pengaturan."
     )
+
+    def _mark(src: str) -> str:
+        return "✅ " if default_src == src else ""
+
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(
             f"Auto-save chat: {'✅ ON' if settings.get('autosave') else '❌ OFF'}",
@@ -1206,6 +1246,21 @@ async def _render_expense_config(
             callback_data="exp:cfg:conf",
         )],
         [InlineKeyboardButton("🧾 Scan Struk", callback_data="exp:scan")],
+        [InlineKeyboardButton(
+            f"{'✅ ' if not default_src else ''}Tanya tiap kali",
+            callback_data="exp:cfg:src:tanya",
+        )],
+        [
+            InlineKeyboardButton(f"{_mark('Cash')}💵 Cash", callback_data="exp:cfg:src:cash"),
+            InlineKeyboardButton(f"{_mark('BNI')}🏦 BNI", callback_data="exp:cfg:src:bni"),
+            InlineKeyboardButton(f"{_mark('Bank Jago')}🏦 Bank Jago", callback_data="exp:cfg:src:jago"),
+        ],
+        [
+            InlineKeyboardButton(f"{_mark('Shopee Pay')}📱 Shopee Pay", callback_data="exp:cfg:src:shopeepay"),
+            InlineKeyboardButton(f"{_mark('Ovo')}📱 Ovo", callback_data="exp:cfg:src:ovo"),
+            InlineKeyboardButton(f"{_mark('Gopay')}📱 Gopay", callback_data="exp:cfg:src:gopay"),
+        ],
+        [InlineKeyboardButton(f"{_mark('Dana')}📱 Dana", callback_data="exp:cfg:src:dana")],
     ])
     return text, keyboard
 
@@ -1255,14 +1310,39 @@ async def _dispatch_expense_command(
         detect_expense_entry,
         format_rupiah,
         parse_periode,
+        parse_sumber,
         resolve_expense_index,
         save_expense_index,
+        set_expense_settings,
+        strip_sumber_words,
     )
     from src.notion import query_expenses
 
     low = (text or "").lower().strip()
+    sumber_filter = parse_sumber(low)
 
-    if low in ("config", "pengaturan", "setting", "setelan"):
+    if low.startswith(("config", "pengaturan", "setting", "setelan")):
+        rest = re.sub(r"^(config|pengaturan|setting|setelan)\b", "", low).strip()
+        default_match = re.match(r"^default\b\s*(.*)$", rest)
+        if default_match:
+            arg = default_match.group(1).strip()
+            if arg in ("tanya", "ask", "off", "reset", ""):
+                await set_expense_settings(chat_id, default_source=None)
+                note = "Baik, sumber dana akan ditanya tiap kali input ya. 🏦"
+            else:
+                src = parse_sumber(arg)
+                if not src:
+                    await destination.send_message(
+                        "Sumber tidak dikenal. Pilihan: cash, bni, bank jago, "
+                        "shopee pay, ovo, gopay, dana (atau 'tanya')."
+                    )
+                    return
+                await set_expense_settings(chat_id, default_source=src)
+                note = f"Siap! Default sumber dana: {src} ✅"
+            cfg_text, keyboard = await _render_expense_config(chat_id)
+            await destination.send_message(note)
+            await destination.send_message(cfg_text, reply_markup=keyboard)
+            return
         cfg_text, keyboard = await _render_expense_config(chat_id)
         await destination.send_message(cfg_text, reply_markup=keyboard)
         return
@@ -1271,20 +1351,32 @@ async def _dispatch_expense_command(
         kw in low for kw in ("berapa", "total", "ringkasan")
     ):
         start, end, label = parse_periode(low)
-        entries = await query_expenses(start_date=start, end_date=end)
-        await destination.send_message(build_recap_text(entries, label))
+        breakdown_only = "rekap sumber" in low or "per sumber" in low
+        entries = await query_expenses(
+            start_date=start, end_date=end, sumber_dana=sumber_filter
+        )
+        await destination.send_message(
+            build_recap_text(
+                entries, label, sumber_dana=sumber_filter, breakdown_only=breakdown_only
+            )
+        )
         return
 
     if low.startswith("cari") or low.startswith("search"):
         keyword = re.sub(r"^(cari|search)\s+(pengeluaran\s+)?", "", low).strip()
-        if not keyword:
+        keyword = strip_sumber_words(keyword).strip()
+        if not keyword and not sumber_filter:
             await destination.send_message(
                 "Mau cari apa? Contoh: /pengeluaran cari kopi"
             )
             return
-        entries = await query_expenses(keyword=keyword)
+        entries = await query_expenses(
+            keyword=keyword or None, sumber_dana=sumber_filter
+        )
         await save_expense_index(chat_id, entries)
-        await destination.send_message(build_search_text(entries, keyword))
+        await destination.send_message(
+            build_search_text(entries, keyword or (sumber_filter or ""))
+        )
         return
 
     if low.startswith(("hapus", "delete")):
@@ -1312,7 +1404,8 @@ async def _dispatch_expense_command(
         await destination.send_message(
             "Yakin mau hapus pengeluaran ini?\n"
             f"• {format_rupiah(entry.get('nominal'))} — {entry.get('deskripsi') or '-'}\n"
-            f"• Tanggal: {entry.get('tanggal') or '-'}",
+            f"• Tanggal: {entry.get('tanggal') or '-'}"
+            + (f"\n• Sumber: {entry.get('sumber_dana')}" if entry.get("sumber_dana") else ""),
             reply_markup=keyboard,
         )
         return
@@ -1337,14 +1430,18 @@ async def _dispatch_expense_command(
     # Tanpa nominal tapi membahas pengeluaran -> anggap permintaan rekap.
     if any(kw in low for kw in ("pengeluaran", "belanja", "rekap")):
         start, end, label = parse_periode(low)
-        entries = await query_expenses(start_date=start, end_date=end)
-        await destination.send_message(build_recap_text(entries, label))
+        entries = await query_expenses(
+            start_date=start, end_date=end, sumber_dana=sumber_filter
+        )
+        await destination.send_message(
+            build_recap_text(entries, label, sumber_dana=sumber_filter)
+        )
         return
 
     await destination.send_message(
         "Aku belum menemukan nominal + deskripsinya. Contoh:\n"
-        "• /pengeluaran 25rb kopi\n"
-        "• /pengeluaran rekap bulan\n"
+        "• /pengeluaran 25rb kopi cash\n"
+        "• /pengeluaran rekap bulan bni\n"
         "• /pengeluaran config"
     )
 
@@ -1370,8 +1467,10 @@ async def _finalize_items(chat_id: int, items: list[dict]) -> list[dict]:
 async def _persist_expense_items(chat_id: int, detection: dict) -> dict:
     """Simpan item pengeluaran ke Notion + dedup + total harian + audit."""
     from src.expenses import (
+        SUMBER_UNKNOWN,
         add_daily_total,
         backup_failed_items,
+        get_expense_settings,
         is_duplicate,
         log_expense_action,
         mark_duplicate,
@@ -1384,6 +1483,11 @@ async def _persist_expense_items(chat_id: int, detection: dict) -> dict:
     sumber = detection.get("sumber", "chat")
     items = await _finalize_items(chat_id, raw_items)
 
+    try:
+        default_source = (await get_expense_settings(chat_id)).get("default_source")
+    except Exception:
+        default_source = None
+
     saved: list[dict] = []
     failed: list[dict] = []
     skipped = 0
@@ -1395,6 +1499,7 @@ async def _persist_expense_items(chat_id: int, detection: dict) -> dict:
         except (TypeError, ValueError):
             nominal = 0
         tanggal = item.get("tanggal") or today_iso()
+        sumber_dana = item.get("sumber_dana") or default_source or SUMBER_UNKNOWN
 
         if nominal <= 0:
             skipped += 1
@@ -1409,17 +1514,24 @@ async def _persist_expense_items(chat_id: int, detection: dict) -> dict:
             kategori=item.get("kategori") or "Lain-lain",
             tanggal=tanggal,
             sumber=sumber,
+            sumber_dana=sumber_dana,
             toko=item.get("toko") or "",
             catatan=item.get("catatan") or "",
         )
         if isinstance(res, dict) and res.get("status") == "success":
-            saved.append({**item, "page_id": res.get("page_id", ""), "sumber": sumber})
+            saved.append({
+                **item,
+                "page_id": res.get("page_id", ""),
+                "sumber": sumber,
+                "sumber_dana": sumber_dana,
+            })
             await mark_duplicate(chat_id, deskripsi, nominal, tanggal)
             await add_daily_total(chat_id, nominal, tanggal)
             await log_expense_action(chat_id, "simpan", {
                 "nominal": nominal,
                 "kategori": item.get("kategori"),
                 "sumber": sumber,
+                "sumber_dana": sumber_dana,
                 "deskripsi": deskripsi,
             })
         else:
@@ -1435,8 +1547,8 @@ async def _persist_expense_items(chat_id: int, detection: dict) -> dict:
     return {"saved": saved, "failed": failed, "skipped": skipped}
 
 
-async def _save_expense_items(destination, chat_id: int, detection: dict) -> dict:
-    """Simpan + kirim balasan hasil (dipakai jalur tanpa konfirmasi)."""
+async def _build_save_result_text(chat_id: int, result: dict) -> str:
+    """Teks balasan hasil simpan (dipakai jalur auto-save & konfirmasi sumber)."""
     from src.expenses import (
         build_saved_text,
         compute_total_for_date,
@@ -1444,23 +1556,125 @@ async def _save_expense_items(destination, chat_id: int, detection: dict) -> dic
         total_label_for_date,
     )
 
-    result = await _persist_expense_items(chat_id, detection)
     if not result["saved"]:
-        await destination.send_message(
+        return (
             "⚠️ Tidak ada entri baru yang tersimpan"
             + (f" ({result['skipped']} duplikat dilewati)." if result["skipped"] else ".")
         )
-        return result
 
     tanggal = result["saved"][0].get("tanggal") or today_iso()
     total = await compute_total_for_date(chat_id, tanggal)
-    await destination.send_message(
-        build_saved_text(
-            result["saved"], total, result["skipped"], len(result["failed"]),
-            total_label=total_label_for_date(tanggal),
-        )
+    return build_saved_text(
+        result["saved"], total, result["skipped"], len(result["failed"]),
+        total_label=total_label_for_date(tanggal),
     )
+
+
+async def _save_expense_items(destination, chat_id: int, detection: dict) -> dict:
+    """Simpan + kirim balasan hasil (dipakai jalur tanpa konfirmasi)."""
+    result = await _persist_expense_items(chat_id, detection)
+    await destination.send_message(await _build_save_result_text(chat_id, result))
     return result
+
+
+async def _resolve_source_and_finish(
+    destination, chat_id: int, draft: dict, source: str, edit_message=None
+) -> None:
+    """
+    Terapkan sumber dana ke draft, lalu tentukan langkah (hibrida):
+    langsung simpan bila aman, atau tampilkan bubble konfirmasi.
+    `edit_message(text, reply_markup=None)` opsional untuk mengedit bubble asal.
+    """
+    from src.expenses import (
+        AUTO_SAVE_CONFIDENCE,
+        apply_source_to_draft,
+        build_confirm_text,
+        clear_draft,
+        get_expense_settings,
+        save_draft,
+        set_source_pending,
+    )
+
+    apply_source_to_draft(draft, source)
+    draft.pop("awaiting_source", None)
+    await set_source_pending(chat_id, False)
+
+    settings = await get_expense_settings(chat_id)
+    confidence = float(draft.get("confidence") or 0.0)
+    items = draft.get("items") or []
+    warning = bool(
+        draft.get("sumber") == "struk" and items and items[0].get("peringatan")
+    )
+    need_confirm = (
+        not settings.get("autosave", True)
+        or settings.get("confirm")
+        or confidence < AUTO_SAVE_CONFIDENCE
+        or warning
+    )
+
+    if need_confirm:
+        await save_draft(chat_id, draft)
+        text = build_confirm_text(draft)
+        if edit_message:
+            await edit_message(text, _expense_confirm_keyboard())
+        else:
+            await destination.send_message(text, reply_markup=_expense_confirm_keyboard())
+        return
+
+    result = await _persist_expense_items(chat_id, draft)
+    await clear_draft(chat_id)
+    text = await _build_save_result_text(chat_id, result)
+    if edit_message:
+        await edit_message(text)
+    else:
+        await destination.send_message(text)
+
+
+async def _handle_source_reply(destination, chat_id: int, text: str) -> bool:
+    """Konsumsi balasan teks user saat draft menunggu sumber dana."""
+    from src.expenses import (
+        clear_draft,
+        detect_expense_entry,
+        get_draft,
+        parse_sumber,
+        set_edit_state,
+        set_source_pending,
+    )
+
+    low = (text or "").lower().strip()
+
+    if low in ("batal", "cancel", "gak jadi", "tidak jadi", "ga jadi"):
+        draft = await get_draft(chat_id)
+        await clear_draft(chat_id)
+        await set_source_pending(chat_id, False)
+        await set_edit_state(chat_id, False)
+        await destination.send_message(
+            "❌ Oke, dibatalkan." if draft else "Tidak ada draft pengeluaran."
+        )
+        return True
+
+    # Pesan pengeluaran baru (ada nominal) -> lepaskan state, biar diproses normal.
+    if detect_expense_entry(text):
+        await set_source_pending(chat_id, False)
+        return False
+
+    # Hanya pesan pendek yang wajar sebagai jawaban sumber (mis. "bni").
+    if len(low.split()) > 4:
+        await set_source_pending(chat_id, False)
+        return False
+
+    source = parse_sumber(text)
+    if not source:
+        await set_source_pending(chat_id, False)
+        return False
+
+    draft = await get_draft(chat_id)
+    if not draft or not draft.get("items"):
+        await set_source_pending(chat_id, False)
+        return False
+
+    await _resolve_source_and_finish(destination, chat_id, draft, source)
+    return True
 
 
 async def _show_expense_confirmation(destination, chat_id: int, draft: dict) -> None:
@@ -1477,13 +1691,16 @@ async def _handle_detected_expense(
     destination, chat_id: int, detection: dict, original_text: str = ""
 ) -> bool:
     """
-    Proses hasil deteksi pengeluaran: simpan langsung bila confidence tinggi &
-    autosave aktif, atau kirim konfirmasi. Returns True bila ditangani.
+    Proses hasil deteksi pengeluaran. Bila sumber dana tidak disebut dan tidak
+    ada default, tanya dulu lewat tombol; selain itu simpan langsung (bila aman)
+    atau kirim konfirmasi. Returns True bila ditangani.
     """
     from src.expenses import (
         AUTO_SAVE_CONFIDENCE,
+        build_source_prompt_text,
         get_expense_settings,
         save_draft,
+        set_source_pending,
         today_iso,
     )
 
@@ -1497,6 +1714,7 @@ async def _handle_detected_expense(
             "nominal": item.get("nominal"),
             "deskripsi": item.get("deskripsi"),
             "kategori": item.get("kategori"),
+            "sumber_dana": item.get("sumber_dana"),
             "tanggal": today_iso(),
             "toko": "",
             "catatan": "",
@@ -1508,6 +1726,22 @@ async def _handle_detected_expense(
     }
 
     settings = await get_expense_settings(chat_id)
+    default_source = settings.get("default_source")
+    if default_source and any(not i.get("sumber_dana") for i in items):
+        from src.expenses import apply_source_to_draft
+
+        apply_source_to_draft(normalized, default_source)
+
+    if any(not i.get("sumber_dana") for i in items):
+        normalized["awaiting_source"] = True
+        await save_draft(chat_id, normalized)
+        await set_source_pending(chat_id, True)
+        await destination.send_message(
+            build_source_prompt_text(normalized),
+            reply_markup=_expense_source_keyboard(),
+        )
+        return True
+
     confidence = float(normalized.get("confidence") or 0.0)
 
     if (
@@ -1536,6 +1770,7 @@ async def _handle_expense_correction(
         format_receipt_catatan,
         get_draft,
         parse_amount,
+        parse_sumber,
         save_draft,
         set_edit_state,
         today_iso,
@@ -1548,6 +1783,9 @@ async def _handle_expense_correction(
         draft = await get_draft(chat_id)
         await clear_draft(chat_id)
         await set_edit_state(chat_id, False)
+        from src.expenses import set_source_pending
+
+        await set_source_pending(chat_id, False)
         await destination.send_message(
             "❌ Oke, dibatalkan." if draft else "Tidak ada draft pengeluaran."
         )
@@ -1559,7 +1797,7 @@ async def _handle_expense_correction(
         return False
 
     item = draft["items"][0]
-    stop_words = r"(?:total|nominal|toko|kategori|tanggal|deskripsi|items?|item)"
+    stop_words = r"(?:total|nominal|toko|kategori|tanggal|deskripsi|items?|item|sumber(?:\s*dana)?)"
 
     amount_match = re.search(
         r"(?:total|nominal)\s*:?\s*([\d.,]+\s*(?:rb|ribu|k|jt|juta)?)", low
@@ -1568,6 +1806,15 @@ async def _handle_expense_correction(
         value = parse_amount(amount_match.group(1))
         if value:
             item["nominal"] = value
+
+    sumber_match = re.search(
+        rf"sumber(?:\s*dana)?\s*:?\s*(.+?)(?:\s+{stop_words}\b|$)",
+        low,
+    )
+    if sumber_match:
+        src = parse_sumber(sumber_match.group(1))
+        if src:
+            item["sumber_dana"] = src
 
     desc_match = re.search(
         rf"deskripsi\s*:?\s*(.+?)(?:\s+{stop_words}\b|$)",
@@ -1647,7 +1894,6 @@ async def _handle_receipt_photo(
     from src.expenses import (
         RECEIPT_ITEMS_PROMPT,
         RECEIPT_VISION_PROMPT,
-        build_confirm_text,
         categorize_receipt_async,
         log_expense_action,
         parse_receipt_result,
@@ -1791,9 +2037,40 @@ async def _handle_receipt_photo(
         "peringatan": item["peringatan"],
     })
 
+    from src.expenses import (
+        build_source_prompt_text,
+        get_expense_settings,
+        parse_sumber,
+        set_source_pending,
+    )
+
+    caption = ""
+    try:
+        caption = (update.message.caption or "") if update.message else ""
+    except Exception:
+        caption = ""
+    source = parse_sumber(caption) or None
+    if not source:
+        try:
+            source = (await get_expense_settings(chat_id)).get("default_source")
+        except Exception:
+            source = None
+
     draft = {"items": [item], "sumber": "struk", "manual": False}
+    if source:
+        item["sumber_dana"] = source
+        await save_draft(chat_id, draft)
+        await _resolve_source_and_finish(
+            update.effective_chat, chat_id, draft, source, edit_message=_finish
+        )
+        return
+
+    draft["awaiting_source"] = True
     await save_draft(chat_id, draft)
-    await _finish(build_confirm_text(draft), reply_markup=_expense_confirm_keyboard())
+    await set_source_pending(chat_id, True)
+    await _finish(
+        build_source_prompt_text(draft), reply_markup=_expense_source_keyboard()
+    )
 
 
 async def _handle_expense_callback(query, chat_id: int, action: str) -> None:
@@ -1822,6 +2099,27 @@ async def _handle_expense_callback(query, chat_id: int, action: str) -> None:
             except Exception as e:
                 logger.warning("Gagal kirim pesan pengeluaran: %s", str(e))
 
+    if action_low.startswith("src:"):
+        from src.expenses import SUMBER_SLUGS, apply_source_to_draft, build_confirm_text, save_draft
+
+        source = SUMBER_SLUGS.get(action_low[4:].strip())
+        if not source:
+            return
+        draft = await get_draft(chat_id)
+        if not draft or not draft.get("items"):
+            await _edit_or_reply("Draft sudah kedaluwarsa. Kirim ulang pengeluarannya ya.")
+            return
+        if draft.get("awaiting_source"):
+            await _resolve_source_and_finish(
+                query.message.chat, chat_id, draft, source, edit_message=_edit_or_reply
+            )
+            return
+        # Sudah di bubble konfirmasi: ganti pilihan sumber lalu render ulang.
+        apply_source_to_draft(draft, source, force=True)
+        await save_draft(chat_id, draft)
+        await _edit_or_reply(build_confirm_text(draft), reply_markup=_expense_confirm_keyboard())
+        return
+
     if action_low == "save":
         draft = await get_draft(chat_id)
         if not draft:
@@ -1830,11 +2128,13 @@ async def _handle_expense_callback(query, chat_id: int, action: str) -> None:
         from src.expenses import (
             build_saved_text,
             compute_total_for_date,
+            set_source_pending,
             today_iso,
             total_label_for_date,
         )
         result = await _persist_expense_items(chat_id, draft)
         await clear_draft(chat_id)
+        await set_source_pending(chat_id, False)
         if result["saved"]:
             tanggal = result["saved"][0].get("tanggal") or today_iso()
             total = await compute_total_for_date(chat_id, tanggal)
@@ -1849,8 +2149,11 @@ async def _handle_expense_callback(query, chat_id: int, action: str) -> None:
         return
 
     if action_low == "cancel":
+        from src.expenses import set_source_pending
+
         await clear_draft(chat_id)
         await set_edit_state(chat_id, False)
+        await set_source_pending(chat_id, False)
         await _edit_or_reply("❌ Dibatalkan. Tidak ada yang disimpan.")
         return
 
@@ -1862,9 +2165,9 @@ async def _handle_expense_callback(query, chat_id: int, action: str) -> None:
         await set_edit_state(chat_id, True)
         await _edit_or_reply(
             "✏️ Ketik koreksinya dalam satu pesan. Contoh:\n"
-            "total 90000 toko Alfamart kategori Belanja\n"
+            "total 90000 toko Alfamart kategori Belanja sumber bni\n"
             "atau: total 13100 toko Alfamidi item aqua 6600, susu 7000\n"
-            "atau: deskripsi kopi susu total 27rb kategori Makan & Minum"
+            "atau: deskripsi kopi susu total 27rb sumber cash"
         )
         return
 
@@ -1887,6 +2190,7 @@ async def _handle_expense_callback(query, chat_id: int, action: str) -> None:
                 "nominal": entry.get("nominal"),
                 "deskripsi": entry.get("deskripsi"),
                 "sumber": "manual",
+                "sumber_dana": entry.get("sumber_dana"),
             })
             await _edit_or_reply(
                 f"🗑️ Dihapus: {entry.get('deskripsi') or '-'} "
@@ -1899,6 +2203,21 @@ async def _handle_expense_callback(query, chat_id: int, action: str) -> None:
 
     if action_low == "delcancel":
         await _edit_or_reply("Oke, tidak jadi dihapus.")
+        return
+
+    if action_low.startswith("cfg:src:"):
+        from src.expenses import SUMBER_SLUGS
+
+        slug = action_low[8:].strip()
+        if slug == "tanya":
+            await set_expense_settings(chat_id, default_source=None)
+        else:
+            source = SUMBER_SLUGS.get(slug)
+            if not source:
+                return
+            await set_expense_settings(chat_id, default_source=source)
+        cfg_text, keyboard = await _render_expense_config(chat_id)
+        await _edit_or_reply(cfg_text, reply_markup=keyboard)
         return
 
     if action_low in ("cfg:auto", "cfg:conf"):
@@ -2985,6 +3304,15 @@ async def handle_message(
     from src.expenses import is_edit_state
     if await is_edit_state(chat_id):
         handled = await _handle_expense_correction(
+            update.effective_chat, chat_id, user_message
+        )
+        if handled:
+            return
+
+    # --- Jawaban sumber dana untuk draft yang sedang menunggu (mis. "cash") ---
+    from src.expenses import is_source_pending
+    if await is_source_pending(chat_id):
+        handled = await _handle_source_reply(
             update.effective_chat, chat_id, user_message
         )
         if handled:

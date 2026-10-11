@@ -46,6 +46,48 @@ CATEGORY_EMOJI = {
     "Lain-lain": "📦",
 }
 
+# Sumber dana (nilai kanonik HARUS sama persis dengan opsi properti
+# "sumber dana" di database Notion "Keuangan Oline").
+SUMBER_OPTIONS = [
+    "Cash", "BNI", "Bank Jago", "Shopee Pay", "Ovo", "Gopay", "Dana",
+]
+
+SUMBER_EMOJI = {
+    "Cash": "💵",
+    "BNI": "🏦",
+    "Bank Jago": "🏦",
+    "Shopee Pay": "📱",
+    "Ovo": "📱",
+    "Gopay": "📱",
+    "Dana": "📱",
+}
+
+# Bucket untuk entri lama / sumber yang tidak diketahui.
+SUMBER_UNKNOWN = "Tidak diketahui"
+
+# Slug tombol callback Telegram -> nilai kanonik.
+SUMBER_SLUGS = {
+    "cash": "Cash",
+    "bni": "BNI",
+    "jago": "Bank Jago",
+    "shopeepay": "Shopee Pay",
+    "ovo": "Ovo",
+    "gopay": "Gopay",
+    "dana": "Dana",
+}
+
+# Keyword deteksi sumber dana (case-insensitive). Dicocokkan dengan word
+# boundary; "jago" & "dana" punya aturan posisi khusus di parse_sumber.
+SUMBER_KEYWORDS = [
+    ("Bank Jago", ["bank jago", "jago"]),
+    ("Shopee Pay", ["shopee pay", "shopeepay"]),
+    ("Gopay", ["gopay", "go pay"]),
+    ("Cash", ["cash", "tunai", "uang fisik"]),
+    ("BNI", ["bni", "bank bni"]),
+    ("Ovo", ["ovo"]),
+    ("Dana", ["dana"]),
+]
+
 # Map keyword lokal -> kategori. Dicek dengan word boundary (kata utuh + sufiks ringan).
 CATEGORY_KEYWORDS = {
     "Makan & Minum": [
@@ -165,12 +207,15 @@ RECEIPT_CAPTION_KEYWORDS = ["struk", "nota", "bon", "receipt", "nota belanja"]
 DEFAULT_SETTINGS = {
     "autosave": True,
     "confirm": False,
+    # None = tanya sumber dana tiap kali; string = pakai default itu.
+    "default_source": None,
 }
 
 SETTINGS_PREFIX = "expense_settings"
 DRAFT_PREFIX = "expense_draft"
 EDIT_PREFIX = "expense_edit"
 SCAN_PREFIX = "expense_scan"
+SRC_PREFIX = "expense_src"
 TOTAL_PREFIX = "expense_total"
 DEDUP_PREFIX = "expense_dedup"
 LOG_PREFIX = "expense_log"
@@ -181,6 +226,7 @@ SETTINGS_TTL = 365 * 24 * 3600
 DRAFT_TTL = 1800
 EDIT_TTL = 900
 SCAN_TTL = 600
+SRC_TTL = 900
 TOTAL_TTL = 90 * 24 * 3600
 DEDUP_TTL = 24 * 3600
 LOG_TTL = 30 * 24 * 3600
@@ -352,12 +398,57 @@ def _clean_description(part: str, amount_match: re.Match) -> str:
     return " ".join(words).strip()
 
 
+def parse_sumber(text: str) -> Optional[str]:
+    """
+    Deteksi sumber dana dari teks (case-insensitive, word boundary).
+    Nilai kanonik: Cash/BNI/Bank Jago/Shopee Pay/Ovo/Gopay/Dana.
+    "jago" dan "dana" polos hanya valid di akhir teks DAN menempel pada pesan
+    bernominal atau berdiri sendiri (mencegah false positive seperti "dia jago
+    masak", "makasih jago", atau "dana darurat").
+    """
+    low = (text or "").lower().strip()
+    if not low:
+        return None
+
+    for canonical, keywords in SUMBER_KEYWORDS:
+        for kw in keywords:
+            if kw in ("jago", "dana"):
+                if not re.search(rf"\b{re.escape(kw)}\b\s*[.!?]*\s*$", low):
+                    continue
+                if re.search(r"\d", low) or len(low.split()) == 1:
+                    return canonical
+                continue
+            elif " " in kw:
+                if re.search(rf"\b{re.escape(kw)}\b", low):
+                    return canonical
+            elif re.search(rf"\b{re.escape(kw)}\b", low):
+                return canonical
+    return None
+
+
+def strip_sumber_words(text: str) -> str:
+    """Buang kata penanda sumber dana dari deskripsi pengeluaran."""
+    if not text:
+        return ""
+    result = text
+    phrases = [
+        "uang fisik", "bank jago", "bank bni", "shopee pay", "shopeepay", "go pay",
+    ]
+    for phrase in phrases:
+        result = re.sub(rf"\b{re.escape(phrase)}\b", " ", result, flags=re.IGNORECASE)
+    for token in ("cash", "tunai", "gopay", "bni", "ovo"):
+        result = re.sub(rf"\b{token}\b", " ", result, flags=re.IGNORECASE)
+    result = re.sub(r"(?:\s+|^)(jago|dana)\s*[.!?]*$", " ", result, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", result).strip()
+
+
 def detect_expense_entry(text: str) -> Optional[dict]:
     """
     Deteksi pengeluaran dari chat bebas.
 
-    Returns dict {"items": [{nominal, deskripsi, kategori, confidence}],
-    "confidence": float, "sumber": "chat"} atau None bila bukan pengeluaran.
+    Returns dict {"items": [{nominal, deskripsi, kategori, sumber_dana,
+    confidence}], "confidence": float, "sumber": "chat"} atau None bila bukan
+    pengeluaran. "sumber" = asal entri (chat), "sumber_dana" = dompet/rekening.
 
     Confidence tinggi (>= 0.85) bila ada penanda mata uang eksplisit (rb/k/Rp).
     """
@@ -406,7 +497,12 @@ def detect_expense_entry(text: str) -> Optional[dict]:
         else:
             continue
 
+        sumber_dana = parse_sumber(part)
         deskripsi = _clean_description(part, match)
+        if deskripsi and sumber_dana:
+            cleaned = strip_sumber_words(deskripsi)
+            if cleaned:
+                deskripsi = cleaned
         if not deskripsi:
             if local_cat:
                 deskripsi = local_cat
@@ -419,6 +515,7 @@ def detect_expense_entry(text: str) -> Optional[dict]:
             "nominal": nominal,
             "deskripsi": deskripsi[:80],
             "kategori": local_cat,
+            "sumber_dana": sumber_dana,
             "confidence": round(confidence, 2),
         })
 
@@ -988,7 +1085,7 @@ def total_label_for_date(date_iso: Optional[str]) -> str:
 # --- Pengaturan user (KV) ---
 
 async def get_expense_settings(chat_id: int) -> dict:
-    """Pengaturan pengeluaran user (default: autosave ON, konfirmasi OFF)."""
+    """Pengaturan pengeluaran user (default: autosave ON, konfirmasi OFF, sumber tanya)."""
     from src.kv import get_cache
 
     settings = dict(DEFAULT_SETTINGS)
@@ -1001,13 +1098,15 @@ async def get_expense_settings(chat_id: int) -> dict:
                     settings["autosave"] = data["autosave"]
                 if isinstance(data.get("confirm"), bool):
                     settings["confirm"] = data["confirm"]
+                if data.get("default_source") in SUMBER_OPTIONS:
+                    settings["default_source"] = data["default_source"]
     except (json.JSONDecodeError, TypeError) as e:
         logger.warning("Error parsing expense settings: %s", str(e))
     return settings
 
 
 async def set_expense_settings(chat_id: int, **updates) -> bool:
-    """Simpan pengaturan pengeluaran user (autosave/confirm)."""
+    """Simpan pengaturan pengeluaran user (autosave/confirm/default_source)."""
     from src.kv import set_cache
 
     settings = await get_expense_settings(chat_id)
@@ -1015,6 +1114,12 @@ async def set_expense_settings(chat_id: int, **updates) -> bool:
         settings["autosave"] = updates["autosave"]
     if isinstance(updates.get("confirm"), bool):
         settings["confirm"] = updates["confirm"]
+    if "default_source" in updates:
+        value = updates.get("default_source")
+        if value in (None, "", "tanya", "ask"):
+            settings["default_source"] = None
+        elif str(value) in SUMBER_OPTIONS:
+            settings["default_source"] = str(value)
     return await set_cache(
         f"{SETTINGS_PREFIX}:{chat_id}",
         json.dumps(settings, ensure_ascii=False),
@@ -1081,6 +1186,34 @@ async def is_scan_pending(chat_id: int) -> bool:
     from src.kv import get_cache
 
     return bool(await get_cache(f"{SCAN_PREFIX}:{chat_id}"))
+
+
+async def set_source_pending(chat_id: int, active: bool = True) -> bool:
+    """State: draft pengeluaran sedang menunggu jawaban sumber dana."""
+    from src.kv import del_cache, set_cache
+
+    if not active:
+        return await del_cache(f"{SRC_PREFIX}:{chat_id}")
+    return await set_cache(f"{SRC_PREFIX}:{chat_id}", "1", ttl_seconds=SRC_TTL)
+
+
+async def is_source_pending(chat_id: int) -> bool:
+    from src.kv import get_cache
+
+    return bool(await get_cache(f"{SRC_PREFIX}:{chat_id}"))
+
+
+def apply_source_to_draft(draft: dict, source: str, force: bool = False) -> int:
+    """
+    Isi sumber dana ke item draft. force=True menimpa semua item;
+    force=False hanya item yang belum punya sumber. Returns jumlah item diisi.
+    """
+    filled = 0
+    for item in draft.get("items") or []:
+        if force or not item.get("sumber_dana"):
+            item["sumber_dana"] = source
+            filled += 1
+    return filled
 
 
 # --- Total harian (KV) ---
@@ -1156,6 +1289,7 @@ async def log_expense_action(chat_id: int, action: str, data: dict) -> None:
             "nominal": data.get("nominal"),
             "kategori": data.get("kategori"),
             "sumber": data.get("sumber"),
+            "sumber_dana": data.get("sumber_dana"),
             "deskripsi": (data.get("deskripsi") or "")[:80],
         }
         # Audit khusus scan struk (ID foto saja, bukan gambarnya).
@@ -1201,6 +1335,7 @@ async def save_expense_index(chat_id: int, items: list[dict]) -> None:
                     "deskripsi": item.get("deskripsi", ""),
                     "nominal": item.get("nominal", 0),
                     "tanggal": item.get("tanggal", ""),
+                    "sumber_dana": item.get("sumber_dana", ""),
                 }
         # Batasi index agar tidak tumbuh tanpa batas.
         if len(index) > 200:
@@ -1260,13 +1395,51 @@ async def pop_backup_items(chat_id: int) -> list[dict]:
 # --- Builder teks ---
 
 def item_line(item: dict) -> str:
-    """Satu baris ringkas entri: 'Rp25.000 — kopi (Makan & Minum)'."""
+    """Satu baris ringkas entri: 'Rp25.000 — kopi (Makan & Minum) | 💵 Cash'."""
     kategori = item.get("kategori") or "Lain-lain"
     emoji = CATEGORY_EMOJI.get(kategori, "📦")
     line = f"{format_rupiah(item.get('nominal'))} — {item.get('deskripsi') or '-'} ({emoji} {kategori})"
     if item.get("toko"):
         line += f" | {item['toko']}"
+    sumber = item.get("sumber_dana")
+    if sumber:
+        line += f" | {SUMBER_EMOJI.get(sumber, '📱')} {sumber}"
     return line
+
+
+def sumber_line(item: dict) -> str:
+    """Baris sumber dana untuk bubble konfirmasi."""
+    sumber = item.get("sumber_dana")
+    if sumber:
+        return f"{SUMBER_EMOJI.get(sumber, '📱')} Sumber: {sumber}"
+    return "❓ Sumber: belum dipilih"
+
+
+def build_source_prompt_text(draft: dict) -> str:
+    """Bubble pertanyaan sumber dana (chat bebas & struk)."""
+    items = draft.get("items") or []
+    lines: list[str] = []
+    if draft.get("sumber") == "struk" and len(items) == 1:
+        item = items[0]
+        lines.append("📸 Struk terbaca:")
+        if item.get("toko"):
+            lines.append(f"🏪 {item['toko']}")
+        lines.append(f"💰 {format_rupiah(item.get('nominal'))}")
+        lines.append("")
+        lines.append("Sumber pengeluaran?")
+    elif len(items) == 1:
+        item = items[0]
+        lines.append("🏦 Sumber pengeluaran?")
+        lines.append(f"💰 {format_rupiah(item.get('nominal'))} — {item.get('deskripsi') or '-'}")
+    else:
+        lines.append("🏦 Sumber pengeluaran?")
+        for item in items[:5]:
+            lines.append(f"• {format_rupiah(item.get('nominal'))} — {item.get('deskripsi') or '-'}")
+    lines.append("")
+    lines.append(
+        "Pilih tombol di bawah, atau balas: cash / bni / bank jago / shopee pay / ovo / gopay / dana"
+    )
+    return "\n".join(lines)
 
 
 def build_saved_text(
@@ -1286,6 +1459,8 @@ def build_saved_text(
         if item.get("kategori"):
             emoji = CATEGORY_EMOJI.get(item["kategori"], "📦")
             lines.append(f"{emoji} {item['kategori']}")
+        if item.get("sumber_dana"):
+            lines.append(f"{SUMBER_EMOJI.get(item['sumber_dana'], '📱')} {item['sumber_dana']}")
         tanggal = format_short_date(item.get("tanggal") or today_iso())
         waktu = item.get("waktu") or ""
         lines.append(f"📅 {tanggal}" + (f", {waktu}" if waktu else ""))
@@ -1328,33 +1503,75 @@ def build_confirm_text(draft: dict) -> str:
         if item.get("kategori"):
             emoji = CATEGORY_EMOJI.get(item["kategori"], "📦")
             lines.append(f"\n{emoji} Kategori: {item['kategori']}")
+        lines.append(f"\n{sumber_line(item)}")
         for warning in item.get("peringatan") or []:
             lines.append(f"⚠️ {warning}")
         return "\n".join(lines)
 
-    if len(items) == 1:
-        return "🧾 Konfirmasi pengeluaran:\n" + f"• {item_line(items[0])}"
-    return "🧾 Konfirmasi pengeluaran:\n" + "\n".join(f"• {item_line(i)}" for i in items)
+    base = "🧾 Konfirmasi pengeluaran:\n" + "\n".join(
+        f"• {item_line(i)}" for i in items
+    )
+    if any(not i.get("sumber_dana") for i in items):
+        base += "\n\n❓ Sumber dana belum dipilih — tekan tombol sumber di bawah."
+    return base
 
 
-def build_recap_text(entries: list[dict], label: str) -> str:
-    """Bangun teks rekap: total + breakdown kategori terbesar."""
+def _entry_sumber(entry: dict) -> str:
+    """Sumber dana entri; nilai asing/kosong -> 'Tidak diketahui'."""
+    sumber = str(entry.get("sumber_dana") or "").strip()
+    return sumber if sumber in SUMBER_OPTIONS else SUMBER_UNKNOWN
+
+
+def build_recap_text(
+    entries: list[dict],
+    label: str,
+    sumber_dana: Optional[str] = None,
+    breakdown_only: bool = False,
+) -> str:
+    """
+    Bangun teks rekap: total + breakdown sumber dana + kategori terbesar.
+    sumber_dana=... memfilter entri; breakdown_only=True hanya menampilkan
+    breakdown per sumber.
+    """
+    if sumber_dana:
+        entries = [e for e in entries if _entry_sumber(e) == sumber_dana]
+        label = f"{sumber_dana} {label}"
     if not entries:
         return f"📊 Belum ada pengeluaran {label.lower()}."
 
     total = sum(int(e.get("nominal") or 0) for e in entries)
-    agg: dict[str, int] = {}
+    src_agg: dict[str, int] = {}
+    cat_agg: dict[str, int] = {}
     for entry in entries:
+        value = int(entry.get("nominal") or 0)
+        src = _entry_sumber(entry)
+        src_agg[src] = src_agg.get(src, 0) + value
         cat = entry.get("kategori") or "Lain-lain"
-        agg[cat] = agg.get(cat, 0) + int(entry.get("nominal") or 0)
+        cat_agg[cat] = cat_agg.get(cat, 0) + value
+
+    def _pct(value: int) -> int:
+        return round(value / total * 100) if total else 0
 
     lines = [f"📊 Pengeluaran {label}: {format_rupiah(total)}"]
+
+    known_sources = [s for s in src_agg if s != SUMBER_UNKNOWN]
+    if known_sources or breakdown_only:
+        lines.append("")
+        lines.append("Per sumber:")
+        for src, value in sorted(src_agg.items(), key=lambda kv: kv[1], reverse=True):
+            emoji = SUMBER_EMOJI.get(src, "❓")
+            lines.append(f"• {emoji} {src}: {format_rupiah(value)} ({_pct(value)}%)")
+
+    if breakdown_only:
+        lines.append("")
+        lines.append(f"Total {len(entries)} transaksi.")
+        return "\n".join(lines)
+
     lines.append("")
     lines.append("Kategori terbesar:")
-    for cat, value in sorted(agg.items(), key=lambda kv: kv[1], reverse=True):
-        pct = round(value / total * 100) if total else 0
+    for cat, value in sorted(cat_agg.items(), key=lambda kv: kv[1], reverse=True):
         emoji = CATEGORY_EMOJI.get(cat, "📦")
-        lines.append(f"• {emoji} {cat}: {format_rupiah(value)} ({pct}%)")
+        lines.append(f"• {emoji} {cat}: {format_rupiah(value)} ({_pct(value)}%)")
     lines.append("")
     lines.append(f"Total {len(entries)} transaksi.")
     return "\n".join(lines)
