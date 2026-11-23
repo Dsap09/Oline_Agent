@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STEPZ — Koleksi Sepatu Terbaik</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Manrope:wght@400;500;600&display=swap" rel="stylesheet">
+<style>* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Manrope', sans-serif;
+  color: #1a1a2e;
+  background: #fafafa;
+  line-height: 1.6;
+}
+
+h1, h2, h3 { font-family: 'Space Grotesk', sans-serif; }
+
+.nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 6%;
+  background: #ffffff;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.logo { font-size: 26px; font-weight: 700; color: #1a1a2e; }
+.logo span { color: #ff5e3a; }
+
+nav a {
+  margin: 0 18px;
+  text-decoration: none;
+  color: #555;
+  font-weight: 500;
+  transition: color .3s;
+}
+nav a:hover { color: #ff5e3a; }
+
+.btn-nav {
+  text-decoration: none;
+  background: #ff5e3a;
+  color: #fff;
+  padding: 10px 22px;
+  border-radius: 30px;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 60px 6%;
+  gap: 40px;
+  background: linear-gradient(135deg, #ffffff 0%, #fff3ef 100%);
+}
+
+.hero-text { flex: 1; }
+
+.badge {
+  background: #ffe9e2;
+  color: #e24a1a;
+  padding: 8px 16px;
+  border-radius: 30px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.hero h1 {
+  font-size: 52px;
+  line-height: 1.15;
+  margin: 18px 0;
+  color: #1a1a2e;
+}
+
+.hero p { font-size: 17px; color: #666; max-width: 480px; margin-bottom: 28px; }
+
+.hero-btns { display: flex; gap: 16px; margin-bottom: 40px; }
+
+.btn-primary, .btn-ghost, .btn-beli {
+  text-decoration: none;
+  padding: 14px 28px;
+  border-radius: 30px;
+  font-weight: 600;
+  font-size: 15px;
+  display: inline-block;
+}
+
+.btn-primary { background: #1a1a2e; color: #fff; }
+.btn-primary:hover { background: #ff5e3a; }
+.btn-ghost { border: 2px solid #1a1a2e; color: #1a1a2e; }
+
+.stats { display: flex; gap: 40px; }
+.stats strong { display: block; font-size: 26px; color: #1a1a2e; }
+.stats span { color: #888; font-size: 13px; }
+
+.hero-img { flex: 1; }
+.hero-img img { width: 100%; max-width: 520px; border-radius: 24px; box-shadow: 0 20px 40px rgba(0,0,0,0.15); }
+
+.kategori, .koleksi, .keunggulan, .testimoni {
+  padding: 70px 6%;
+  text-align: center;
+}
+
+.kategori h2, .koleksi h2, .keunggulan h2, .testimoni h2 {
+  font-size: 36px;
+  margin-bottom: 10px;
+}
+
+.kategori p { color: #888; margin-bottom: 40px; }
+
+.kategori-grid, .produk-grid, .keunggulan-grid, .testi-grid {
+  display: grid;
+  gap: 30px;
+}
+
+.kategori-grid { grid-template-columns: repeat(3, 1fr); }
+
+.kat-card, .produk, .testi {
+  background: #fff;
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.06);
+  transition: transform .3s;
+}
+
+.kat-card:hover, .produk:hover { transform: translateY(-6px); }
+
+.kat-card img, .produk img { width: 100%; border-radius: 12px; height: 220px; object-fit: cover; }
+.kat-card h3 { margin: 14px 0 6px; }
+.kat-card p { color: #888; font-size: 14px; }
+
+.koleksi { background: #fff; }
+
+.produk-grid { grid-template-columns: repeat(3, 1fr); }
+.produk h3 { margin: 14px 0 4px; }
+.produk span { display: block; color: #ff5e3a; font-weight: 700; margin-bottom: 12px; }
+
+.btn-beli { background: #1a1a2e; color: #fff; font-size: 14px; padding: 10px 26px; }
+.btn-beli:hover { background: #ff5e3a; }
+
+.keunggulan { background: #1a1a2e; color: #fff; }
+.keunggulan h2 { color: #fff; }
+.keunggulan-grid { grid-template-columns: repeat(3, 1fr); }
+
+.unggul { padding: 30px 20px; }
+.ikon { font-size: 40px; margin-bottom: 12px; }
+.unggul p { color: #aaa; }
+
+.testi-grid { grid-template-columns: repeat(2, 1fr); }
+.testi p { font-size: 16px; color: #444; font-style: italic; margin-bottom: 12px; }
+.testi span { color: #ff5e3a; font-weight: 600; }
+
+footer {
+  background: #1a1a2e;
+  color: #fff;
+  text-align: center;
+  padding: 60px 6% 30px;
+}
+
+footer h3 { font-size: 32px; margin-bottom: 10px; }
+footer p { color: #aaa; margin-bottom: 30px; }
+.footer-bawah { margin-top: 40px; border-top: 1px solid #333; padding-top: 20px; font-size: 13px; color: #777; }
+
+@media (max-width: 900px) {
+  .hero { flex-direction: column; text-align: center; }
+  .hero-btns, .stats { justify-content: center; }
+  .kategori-grid, .produk-grid, .keunggulan-grid, .testi-grid { grid-template-columns: 1fr; }
+  .hero h1 { font-size: 38px; }
+  nav { display: none; }
+}</style></head>
+<body>
+<header class="nav">
+  <div class="logo">STEP<span>Z</span></div>
+  <nav>
+    <a href="#koleksi">Koleksi</a>
+    <a href="#keunggulan">Keunggulan</a>
+    <a href="#testimoni">Testimoni</a>
+  </nav>
+  <a href="#kontak" class="btn-nav">Pesan Sekarang</a>
+</header>
+
+<section class="hero">
+  <div class="hero-text">
+    <span class="badge">🔥 Musim panas, penawaran spesial</span>
+    <h1>Langkah Percaya Diri<br>Dimulai dari Sini</h1>
+    <p>Koleksi sepatu premium yang nyaman dipakai seharian, untuk gaya hidup aktifmu. Ringan, kokoh, dan tetap tampil keren.</p>
+    <div class="hero-btns">
+      <a href="#koleksi" class="btn-primary">Lihat Koleksi</a>
+      <a href="#keunggulan" class="btn-ghost">Kenapa STEPZ?</a>
+    </div>
+    <div class="stats">
+      <div><strong>500+</strong><span>Model Pilihan</span></div>
+      <div><strong>98%</strong><span>Pembeli Puas</span></div>
+      <div><strong>24 Jam</strong><span>Pengiriman Kilat</span></div>
+    </div>
+  </div>
+  <div class="hero-img">
+    <img src="https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=700&q=80" alt="Sepatu premium merah">
+  </div>
+</section>
+
+<section class="kategori">
+  <h2>Temukan yang Sesuai Gaya Kamu</h2>
+  <p>Tiga pilihan utama untuk setiap kebutuhan langkahmu.</p>
+  <div class="kategori-grid">
+    <div class="kat-card">
+      <img src="https://images.unsplash.com/photo-1560769629-975ec94e6a86?auto=format&fit=crop&w=500&q=80" alt="Sepatu olahraga">
+      <h3>Sport & Running</h3>
+      <p>Ringan dan responsif untuk aktivitas harianmu.</p>
+    </div>
+    <div class="kat-card">
+      <img src="https://images.unsplash.com/photo-1595950653106-6c9ebd614d3a?auto=format&fit=crop&w=500&q=80" alt="Sepatu kasual">
+      <h3>Casual & Santai</h3>
+      <p>Tampilan santai yang tetap stylish di mana saja.</p>
+    </div>
+    <div class="kat-card">
+      <img src="https://images.unsplash.com/photo-1543163521-1bf539c55dd2?auto=format&fit=crop&w=500&q=80" alt="Sepatu formal">
+      <h3>Formal & Kulit</h3>
+      <p>Elegan untuk kebutuhan profesional dan rapat.</p>
+    </div>
+  </div>
+</section>
+
+<section class="koleksi" id="koleksi">
+  <h2>Koleksi Unggulan</h2>
+  <div class="produk-grid">
+    <div class="produk">
+      <img src="https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=400&q=80" alt="Aero Run">
+      <h3>Aero Run</h3>
+      <span>Rp 459.000</span>
+      <a href="#" class="btn-beli">Beli Sekarang</a>
+    </div>
+    <div class="produk">
+      <img src="https://images.unsplash.com/photo-1595950653106-6c9ebd614d3a?auto=format&fit=crop&w=400&q=80" alt="Urban Walk">
+      <h3>Urban Walk</h3>
+      <span>Rp 399.000</span>
+      <a href="#" class="btn-beli">Beli Sekarang</a>
+    </div>
+    <div class="produk">
+      <img src="https://images.unsplash.com/photo-1560769629-975ec94e6a86?auto=format&fit=crop&w=400&q=80" alt="Stride Pro">
+      <h3>Stride Pro</h3>
+      <span>Rp 529.000</span>
+      <a href="#" class="btn-beli">Beli Sekarang</a>
+    </div>
+  </div>
+</section>
+
+<section class="keunggulan" id="keunggulan">
+  <h2>Kenapa Memilih STEPZ?</h2>
+  <div class="keunggulan-grid">
+    <div class="unggul">
+      <div class="ikon">👟</div>
+      <h3>Bahan Premium</h3>
+      <p>Material pilihan yang tahan lama dan nyaman.</p>
+    </div>
+    <div class="unggul">
+      <div class="ikon">🚚</div>
+      <h3>Gratis Ongkir</h3>
+      <p>Untuk semua pembelian di atas Rp 300 ribu.</p>
+    </div>
+    <div class="unggul">
+      <div class="ikon">🔄</div>
+      <h3>Garansi Tukar</h3>
+      <p>Tukar ukuran dengan mudah hingga 7 hari.</p>
+    </div>
+  </div>
+</section>
+
+<section class="testimoni" id="testimoni">
+  <h2>Apa Kata Mereka</h2>
+  <div class="testi-grid">
+    <div class="testi">
+      <p>"Nyaman banget dipakai seharian. Ukurannya pas dan bahan premium."</p>
+      <span>— Andi, Jakarta</span>
+    </div>
+    <div class="testi">
+      <p>"Pengirimannya cepat, kualitasnya tidak mengecewakan. Recommended!"</p>
+      <span>— Rina, Surabaya</span>
+    </div>
+  </div>
+</section>
+
+<footer id="kontak">
+  <h3>Mulai Langkah Barumu Hari Ini</h3>
+  <p>Pesan sekarang dan nikmati harga spesial peluncuran.</p>
+  <a href="#" class="btn-primary">Pesan Sekarang</a>
+  <div class="footer-bawah">
+    <span>© 2026 STEPZ Store. Semua hak dilindungi.</span>
+  </div>
+</footer>
+<script>// Interaksi ringan untuk smooth scroll
+document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+  anchor.addEventListener('click', function(e) {
+    e.preventDefault();
+    const target = document.querySelector(this.getAttribute('href'));
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth' });
+    }
+  });
+});</script></body>
+</html>
